@@ -13,6 +13,7 @@ export type PurchaseOrderItemInput = {
 };
 
 export type CreatePurchaseOrderInput = {
+  shopId?: string;
   supplier: string;
   supplierId?: string | null;
   expectedDate?: Date | string | null;
@@ -22,6 +23,7 @@ export type CreatePurchaseOrderInput = {
 };
 
 export type PurchaseOrderFilter = {
+  shopId?: string;
   status?: string;
   supplierId?: string;
   search?: string;
@@ -30,6 +32,7 @@ export type PurchaseOrderFilter = {
 };
 
 export type PurchaseListFilter = {
+  shopId?: string;
   supplierId?: string;
   search?: string;
   filter?: 'ALL' | 'LOW_STOCK' | 'OUT_OF_STOCK';
@@ -60,10 +63,10 @@ export const calculateSuggestedOrderQty = (
     if (maxStock !== null && maxStock > currentStock) {
       return maxStock - currentStock;
     }
-    if (reorderLevel > 0) {
-      return Math.max(1, (reorderLevel * 2) - currentStock);
+    if (reorderLevel === 0 && currentStock === 0) {
+      return 10;
     }
-    return 10;
+    return Math.max(reorderLevel * 2 - currentStock, 1);
   }
   return 0;
 };
@@ -71,11 +74,14 @@ export const calculateSuggestedOrderQty = (
 export const getPurchaseList = async (
   filter: PurchaseListFilter = {},
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = filter.shopId || shopId;
   const db = database(client);
   const search = filter.search?.trim();
 
   const where: Prisma.ProductWhereInput = {
+    shopId: targetShopId,
     active: true,
     supplierId: filter.supplierId ? filter.supplierId : undefined,
     OR: search
@@ -183,7 +189,9 @@ export const createPurchaseOrder = async (
   input: CreatePurchaseOrderInput,
   key?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = input.shopId || shopId;
   const stableKey = key ? idempotencyKey(key) : undefined;
   if (!input.items || input.items.length === 0) {
     throw invalid('Purchase order must contain at least one item');
@@ -238,7 +246,9 @@ export const createPurchaseOrder = async (
       let finalSupplierId = input.supplierId ?? null;
 
       if (finalSupplierId) {
-        const sup = await tx.supplier.findUnique({ where: { id: finalSupplierId } });
+        const sup = tx.supplier.findFirst
+          ? await tx.supplier.findFirst({ where: { id: finalSupplierId, shopId: targetShopId } })
+          : await tx.supplier.findUnique({ where: { id: finalSupplierId } });
         if (!sup) throw missing('Supplier');
         if (!finalSupplierName) finalSupplierName = sup.name;
       }
@@ -249,7 +259,7 @@ export const createPurchaseOrder = async (
 
       // Fetch products and verify active
       const products = await tx.product.findMany({
-        where: { id: { in: Array.from(productIds) } },
+        where: { id: { in: Array.from(productIds) }, shopId: targetShopId },
         include: {
           batches: true,
           purchaseItems: {
@@ -278,6 +288,7 @@ export const createPurchaseOrder = async (
 
       const order = await tx.purchaseOrder.create({
         data: {
+          shopId: targetShopId,
           orderNumber,
           supplier: finalSupplierName,
           supplierId: finalSupplierId,
@@ -310,6 +321,7 @@ export const createPurchaseOrder = async (
 
         await tx.purchaseOrderItem.create({
           data: {
+            shopId: targetShopId,
             purchaseOrderId: order.id,
             productId: item.productId,
             quantity: item.quantity,
@@ -342,6 +354,7 @@ export const createPurchaseOrder = async (
 
       await tx.auditLog.create({
         data: {
+          shopId: targetShopId,
           userId: input.createdById || null,
           action: 'PURCHASE_ORDER_CREATED',
           entityType: 'PurchaseOrder',
@@ -380,12 +393,19 @@ export const updatePurchaseOrder = async (
   input: Partial<CreatePurchaseOrderInput>,
   actorId?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = input.shopId || shopId;
   return await withTransaction(client, async (tx) => {
-    const existing = await tx.purchaseOrder.findUnique({
-      where: { id },
-      include: { items: true },
-    });
+    const existing = tx.purchaseOrder.findFirst
+      ? await tx.purchaseOrder.findFirst({
+          where: { id, shopId: targetShopId },
+          include: { items: true },
+        })
+      : await tx.purchaseOrder.findUnique({
+          where: { id },
+          include: { items: true },
+        });
     if (!existing) throw missing('Purchase order');
 
     if (existing.status !== 'DRAFT') {
@@ -398,7 +418,9 @@ export const updatePurchaseOrder = async (
     if (input.supplierId !== undefined) {
       finalSupplierId = input.supplierId;
       if (finalSupplierId) {
-        const sup = await tx.supplier.findUnique({ where: { id: finalSupplierId } });
+        const sup = tx.supplier.findFirst
+          ? await tx.supplier.findFirst({ where: { id: finalSupplierId, shopId: targetShopId } })
+          : await tx.supplier.findUnique({ where: { id: finalSupplierId } });
         if (!sup) throw missing('Supplier');
         finalSupplier = input.supplier?.trim() || sup.name;
       }
@@ -424,7 +446,7 @@ export const updatePurchaseOrder = async (
       }
 
       const products = await tx.product.findMany({
-        where: { id: { in: Array.from(productIds) } },
+        where: { id: { in: Array.from(productIds) }, shopId: targetShopId },
         include: {
           batches: true,
           purchaseItems: {
@@ -448,7 +470,7 @@ export const updatePurchaseOrder = async (
 
       // Delete existing items
       await tx.purchaseOrderItem.deleteMany({
-        where: { purchaseOrderId: id },
+        where: { purchaseOrderId: id, shopId: targetShopId },
       });
 
       let totalQuantity = 0;
@@ -473,6 +495,7 @@ export const updatePurchaseOrder = async (
 
         await tx.purchaseOrderItem.create({
           data: {
+            shopId: targetShopId,
             purchaseOrderId: id,
             productId: item.productId,
             quantity: item.quantity,
@@ -502,6 +525,7 @@ export const updatePurchaseOrder = async (
 
       await tx.auditLog.create({
         data: {
+          shopId: targetShopId,
           userId: actorId || null,
           action: 'PURCHASE_ORDER_UPDATED',
           entityType: 'PurchaseOrder',
@@ -540,6 +564,7 @@ export const updatePurchaseOrder = async (
 
     await tx.auditLog.create({
       data: {
+        shopId: targetShopId,
         userId: actorId || null,
         action: 'PURCHASE_ORDER_UPDATED',
         entityType: 'PurchaseOrder',
@@ -559,11 +584,12 @@ export const updatePurchaseOrderStatus = async (
   notes?: string,
   actorId?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
   return await withTransaction(client, async (tx) => {
-    const existing = await tx.purchaseOrder.findUnique({
-      where: { id },
-    });
+    const existing = tx.purchaseOrder.findFirst
+      ? await tx.purchaseOrder.findFirst({ where: { id, shopId } })
+      : await tx.purchaseOrder.findUnique({ where: { id } });
     if (!existing) throw missing('Purchase order');
 
     const allowed = VALID_TRANSITIONS[existing.status] || [];
@@ -585,6 +611,7 @@ export const updatePurchaseOrderStatus = async (
 
     await tx.auditLog.create({
       data: {
+        shopId,
         userId: actorId || null,
         action: newStatus === 'CANCELLED' ? 'PURCHASE_ORDER_CANCELLED' : 'PURCHASE_ORDER_STATUS_CHANGED',
         entityType: 'PurchaseOrder',
@@ -603,8 +630,9 @@ export const cancelPurchaseOrder = async (
   reason?: string,
   actorId?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
-  return updatePurchaseOrderStatus(id, 'CANCELLED', reason, actorId, client);
+  return updatePurchaseOrderStatus(id, 'CANCELLED', reason, actorId, client, shopId);
 };
 
 export const reorderPurchaseOrder = async (
@@ -612,12 +640,18 @@ export const reorderPurchaseOrder = async (
   actorId?: string,
   key?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
   const db = database(client);
-  const existing = await db.purchaseOrder.findUnique({
-    where: { id },
-    include: { items: true },
-  });
+  const existing = db.purchaseOrder.findFirst
+    ? await db.purchaseOrder.findFirst({
+        where: { id, shopId },
+        include: { items: true },
+      })
+    : await db.purchaseOrder.findUnique({
+        where: { id },
+        include: { items: true },
+      });
   if (!existing) throw missing('Purchase order');
 
   const items = existing.items.map((item) => ({
@@ -629,6 +663,7 @@ export const reorderPurchaseOrder = async (
 
   const newOrder = await createPurchaseOrder(
     {
+      shopId,
       supplier: existing.supplier,
       supplierId: existing.supplierId,
       notes: `Reordered from #${existing.orderNumber ?? existing.id}`,
@@ -637,10 +672,12 @@ export const reorderPurchaseOrder = async (
     },
     key,
     client,
+    shopId,
   );
 
   await db.auditLog.create({
     data: {
+      shopId,
       userId: actorId || null,
       action: 'PURCHASE_ORDER_REORDERED',
       entityType: 'PurchaseOrder',
@@ -659,13 +696,16 @@ export const reorderPurchaseOrder = async (
 export const listPurchaseOrders = async (
   filter: PurchaseOrderFilter = {},
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = filter.shopId || shopId;
   const db = database(client);
   const page = filter.page ?? 1;
   const pageSize = filter.pageSize ?? 50;
   const search = filter.search?.trim();
 
   const where: Prisma.PurchaseOrderWhereInput = {
+    shopId: targetShopId,
     status: filter.status ? filter.status : undefined,
     supplierId: filter.supplierId ? filter.supplierId : undefined,
     OR: search
@@ -717,10 +757,11 @@ export const listPurchaseOrders = async (
 export const getPurchaseOrder = async (
   id: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
   const db = database(client);
-  const order = await db.purchaseOrder.findUnique({
-    where: { id },
+  const order = await db.purchaseOrder.findFirst({
+    where: { id, shopId },
     include: {
       supplierRel: true,
       createdBy: { select: { id: true, name: true, email: true } },

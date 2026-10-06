@@ -27,6 +27,7 @@ const resetPasswordSchema = z.object({
 
 const sanitizeUser = (user: any) => ({
   id: user.id,
+  shopId: user.shopId,
   name: user.name,
   email: user.email,
   phone: user.phone,
@@ -36,9 +37,11 @@ const sanitizeUser = (user: any) => ({
   updatedAt: user.updatedAt,
 });
 
-export const listUsers = async (_req: any, res: any, next: any) => {
+export const listUsers = async (req: any, res: any, next: any) => {
   try {
+    const shopId = req.user?.shopId;
     const users = await prisma.user.findMany({
+      where: shopId ? { shopId } : undefined,
       include: { role: true },
       orderBy: { createdAt: 'desc' },
     });
@@ -54,6 +57,11 @@ export const listUsers = async (_req: any, res: any, next: any) => {
 
 export const createUser = async (req: any, res: any, next: any) => {
   try {
+    const shopId = req.user?.shopId;
+    if (!shopId) {
+      return next(new AppError('Shop context is missing', 400));
+    }
+
     const payload = createUserSchema.parse(req.body);
 
     const role = await prisma.role.findUnique({ where: { name: payload.roleName } });
@@ -70,6 +78,7 @@ export const createUser = async (req: any, res: any, next: any) => {
 
     const user = await prisma.user.create({
       data: {
+        shopId,
         name: payload.name,
         email: payload.email.toLowerCase(),
         password,
@@ -94,11 +103,12 @@ export const createUser = async (req: any, res: any, next: any) => {
 
 export const updateUser = async (req: any, res: any, next: any) => {
   try {
+    const shopId = req.user?.shopId;
     const { id } = req.params;
     const payload = updateUserSchema.parse(req.body);
 
-    const user = await prisma.user.findUnique({
-      where: { id },
+    const user = await prisma.user.findFirst({
+      where: { id, ...(shopId ? { shopId } : {}) },
       include: { role: true },
     });
 
@@ -111,10 +121,11 @@ export const updateUser = async (req: any, res: any, next: any) => {
       return next(new AppError('Role not found', 404));
     }
 
-    // Safety: If changing role away from OWNER on an active owner, verify they aren't the last active owner
+    // Safety: If changing role away from OWNER on an active owner, verify they aren't the last active owner in this shop
     if (user.role.name === 'OWNER' && payload.roleName !== 'OWNER' && user.isActive) {
       const activeOwnerCount = await prisma.user.count({
         where: {
+          shopId: user.shopId,
           isActive: true,
           role: { name: 'OWNER' },
         },
@@ -126,7 +137,7 @@ export const updateUser = async (req: any, res: any, next: any) => {
     }
 
     const updated = await prisma.user.update({
-      where: { id },
+      where: { id: user.id },
       data: {
         name: payload.name,
         phone: payload.phone || null,
@@ -149,11 +160,12 @@ export const updateUser = async (req: any, res: any, next: any) => {
 
 export const setUserStatus = async (req: any, res: any, next: any) => {
   try {
+    const shopId = req.user?.shopId;
     const { id } = req.params;
     const { isActive } = statusSchema.parse(req.body);
 
-    const user = await prisma.user.findUnique({
-      where: { id },
+    const user = await prisma.user.findFirst({
+      where: { id, ...(shopId ? { shopId } : {}) },
       include: { role: true },
     });
 
@@ -161,10 +173,11 @@ export const setUserStatus = async (req: any, res: any, next: any) => {
       return next(new AppError('User not found', 404));
     }
 
-    // Safety: prevent deactivating the last active OWNER
+    // Safety: prevent deactivating the last active OWNER in this shop
     if (!isActive && user.role.name === 'OWNER' && user.isActive) {
       const activeOwnerCount = await prisma.user.count({
         where: {
+          shopId: user.shopId,
           isActive: true,
           role: { name: 'OWNER' },
         },
@@ -176,7 +189,7 @@ export const setUserStatus = async (req: any, res: any, next: any) => {
     }
 
     const updated = await prisma.user.update({
-      where: { id },
+      where: { id: user.id },
       data: { isActive },
       include: { role: true },
     });
@@ -195,17 +208,20 @@ export const setUserStatus = async (req: any, res: any, next: any) => {
 
 export const resetUserPassword = async (req: any, res: any, next: any) => {
   try {
+    const shopId = req.user?.shopId;
     const { id } = req.params;
     const { newPassword } = resetPasswordSchema.parse(req.body);
 
-    const user = await prisma.user.findUnique({ where: { id } });
+    const user = await prisma.user.findFirst({
+      where: { id, ...(shopId ? { shopId } : {}) },
+    });
     if (!user) {
       return next(new AppError('User not found', 404));
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
-      where: { id },
+      where: { id: user.id },
       data: { password: hashedPassword },
     });
 

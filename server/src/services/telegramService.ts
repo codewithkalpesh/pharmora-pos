@@ -12,6 +12,7 @@ import {
   getCustomerOutstandingReport,
   getSupplierOutstandingReport,
   getDashboardAnalytics,
+  getMonthlySalesTarget,
 } from './reportsService.js';
 import { getExpiryDashboard } from './batchService.js';
 import { getPurchaseList } from './purchaseOrderService.js';
@@ -66,10 +67,11 @@ const fmtINR = (val: number | string | Prisma.Decimal | null | undefined) => {
 /**
  * Retrieve current Telegram configuration without exposing bot token.
  */
-export const getTelegramConfig = async (client?: DbClient): Promise<TelegramConfig> => {
+export const getTelegramConfig = async (client?: DbClient, shopId = 'default-shop-pharmora'): Promise<TelegramConfig> => {
   const db = database(client);
   const rows = await db.setting.findMany({
     where: {
+      shopId,
       key: {
         in: [
           'TELEGRAM_BOT_TOKEN',
@@ -128,6 +130,7 @@ export const updateTelegramConfig = async (
   },
   client?: DbClient,
   actorId?: string,
+  shopId = 'default-shop-pharmora',
 ): Promise<TelegramConfig> => {
   const db = database(client);
 
@@ -135,12 +138,12 @@ export const updateTelegramConfig = async (
     const trimmedToken = input.botToken.trim();
     if (trimmedToken) {
       await db.setting.upsert({
-        where: { key: 'TELEGRAM_BOT_TOKEN' },
+        where: { key_shopId: { key: 'TELEGRAM_BOT_TOKEN', shopId } },
         update: { value: trimmedToken },
-        create: { key: 'TELEGRAM_BOT_TOKEN', value: trimmedToken },
+        create: { key: 'TELEGRAM_BOT_TOKEN', value: trimmedToken, shopId },
       });
     } else {
-      await db.setting.deleteMany({ where: { key: 'TELEGRAM_BOT_TOKEN' } });
+      await db.setting.deleteMany({ where: { key: 'TELEGRAM_BOT_TOKEN', shopId } });
     }
   }
 
@@ -148,35 +151,36 @@ export const updateTelegramConfig = async (
     const trimmedChatId = input.chatId.trim();
     if (trimmedChatId) {
       await db.setting.upsert({
-        where: { key: 'TELEGRAM_CHAT_ID' },
+        where: { key_shopId: { key: 'TELEGRAM_CHAT_ID', shopId } },
         update: { value: trimmedChatId },
-        create: { key: 'TELEGRAM_CHAT_ID', value: trimmedChatId },
+        create: { key: 'TELEGRAM_CHAT_ID', value: trimmedChatId, shopId },
       });
     } else {
-      await db.setting.deleteMany({ where: { key: 'TELEGRAM_CHAT_ID' } });
+      await db.setting.deleteMany({ where: { key: 'TELEGRAM_CHAT_ID', shopId } });
     }
   }
 
   if (input.enabled !== undefined) {
     await db.setting.upsert({
-      where: { key: 'TELEGRAM_ENABLED' },
+      where: { key_shopId: { key: 'TELEGRAM_ENABLED', shopId } },
       update: { value: input.enabled ? 'true' : 'false' },
-      create: { key: 'TELEGRAM_ENABLED', value: input.enabled ? 'true' : 'false' },
+      create: { key: 'TELEGRAM_ENABLED', value: input.enabled ? 'true' : 'false', shopId },
     });
   }
 
   if (input.preferences) {
-    const current = await getTelegramConfig(client);
+    const current = await getTelegramConfig(client, shopId);
     const updatedPrefs = { ...current.preferences, ...input.preferences };
     await db.setting.upsert({
-      where: { key: 'TELEGRAM_NOTIFICATION_PREFS' },
+      where: { key_shopId: { key: 'TELEGRAM_NOTIFICATION_PREFS', shopId } },
       update: { value: JSON.stringify(updatedPrefs) },
-      create: { key: 'TELEGRAM_NOTIFICATION_PREFS', value: JSON.stringify(updatedPrefs) },
+      create: { key: 'TELEGRAM_NOTIFICATION_PREFS', value: JSON.stringify(updatedPrefs), shopId },
     });
   }
 
   await db.auditLog.create({
     data: {
+      shopId,
       userId: actorId ?? null,
       action: 'TELEGRAM_CONFIG_UPDATED',
       entityType: 'Setting',
@@ -189,12 +193,11 @@ export const updateTelegramConfig = async (
     },
   });
 
-  return getTelegramConfig(client);
+  return getTelegramConfig(client, shopId);
 };
 
 /**
  * Low-level safe sender that posts a raw message to Telegram Bot API.
- * Never throws an unhandled exception.
  */
 export const sendTelegramRawMessage = async (
   messageText: string,
@@ -203,6 +206,7 @@ export const sendTelegramRawMessage = async (
     chatId?: string;
     parseMode?: 'HTML' | 'Markdown' | 'MarkdownV2';
     force?: boolean;
+    shopId?: string;
   },
   client?: DbClient,
   context?: {
@@ -210,9 +214,11 @@ export const sendTelegramRawMessage = async (
     entityType?: string;
     entityId?: string;
     userId?: string;
+    shopId?: string;
   },
 ): Promise<SendResult> => {
   const db = database(client);
+  const targetShopId = options?.shopId || context?.shopId || 'default-shop-pharmora';
 
   try {
     let token = options?.token;
@@ -222,6 +228,7 @@ export const sendTelegramRawMessage = async (
     if (!token || !chatId) {
       const rows = await db.setting.findMany({
         where: {
+          shopId: targetShopId,
           key: { in: ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID', 'TELEGRAM_ENABLED'] },
         },
       });
@@ -270,6 +277,7 @@ export const sendTelegramRawMessage = async (
       const errMsg = data.description || `HTTP ${response.status}: Failed to send Telegram message`;
       await db.telegramEvent.create({
         data: {
+          shopId: targetShopId,
           userId: context?.userId ?? null,
           eventType: context?.eventType ?? 'MESSAGE',
           entityType: context?.entityType ?? null,
@@ -288,6 +296,7 @@ export const sendTelegramRawMessage = async (
 
     await db.telegramEvent.create({
       data: {
+        shopId: targetShopId,
         userId: context?.userId ?? null,
         eventType: context?.eventType ?? 'MESSAGE',
         entityType: context?.entityType ?? null,
@@ -304,10 +313,11 @@ export const sendTelegramRawMessage = async (
       formattedMessage: messageText,
     };
   } catch (err: any) {
-    const errMsg = err?.message || 'Unknown network error sending Telegram message';
+    const errorStr = err?.message || 'Network error while contacting Telegram';
     try {
       await db.telegramEvent.create({
         data: {
+          shopId: targetShopId,
           userId: context?.userId ?? null,
           eventType: context?.eventType ?? 'MESSAGE',
           entityType: context?.entityType ?? null,
@@ -317,552 +327,424 @@ export const sendTelegramRawMessage = async (
         },
       });
     } catch {
-      // Ignore DB logging failure if connection lost
+      // Ignore fallback DB failure
     }
-
     return {
       success: false,
-      error: errMsg,
+      error: errorStr,
       formattedMessage: messageText,
     };
   }
 };
 
 /**
- * 1. Test Telegram Connection
+ * 1. Daily Summary Message
  */
-export const testTelegramConnection = async (
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const timestamp = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
-  const msg = [
-    '🧪 *PHARMORA POS TEST NOTIFICATION*',
-    '',
-    'Your Telegram bot connection has been successfully verified.',
-    `Time: ${timestamp}`,
-    'Status: Online & Ready',
-  ].join('\n');
-
-  return sendTelegramRawMessage(
-    msg,
-    { force: true },
-    client,
-    { eventType: 'TEST_CONNECTION', userId: actorId },
-  );
-};
-
-/**
- * 2. Daily Summary Notification
- */
-export const sendDailySummary = async (
-  dateInput?: Date | string,
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const db = database(client);
-  const targetDate = dateInput ? new Date(dateInput) : new Date();
-  const dateStr = targetDate.toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  });
-
-  // Pull existing verified calculations from reports, cashbook & batch services
-  const [salesReport, purchaseReport, expenseReport, cashbookReport, expiryDashboard, purchaseList, dashboard] =
-    await Promise.all([
-      getSalesReport({ preset: 'TODAY' }, client),
-      getPurchaseReport({ preset: 'TODAY' }, client),
-      getExpenseReport({ preset: 'TODAY' }, client),
-      getCashbookReport({ preset: 'TODAY' }, client),
-      getExpiryDashboard(targetDate, client),
-      getPurchaseList({ filter: 'LOW_STOCK' }, client),
-      getDashboardAnalytics(client),
-    ]);
-
-  const posSales = salesReport.summary.posSales ?? salesReport.summary.grossSales;
-  const nonPosSales = salesReport.summary.nonPosSales ?? 0;
-  const totalSales = salesReport.summary.netSales;
-
-  const cashPay = salesReport.summary.cashSales;
-  const upiPay = salesReport.summary.upiSales;
-  const creditPay = salesReport.summary.creditSales;
-
-  const grossPurchases = purchaseReport.summary.grossPurchases;
-  const totalExpenses = expenseReport.summary.totalExpenses;
-
-  const drawerOpening = cashbookReport.cash.inflows;
-  const drawerExpected = dashboard.today.expectedDrawer;
-  const drawerActual = dashboard.today.actualDrawer;
-  const drawerDiff = dashboard.today.cashDifference;
-
-  const customerDue = dashboard.alerts.customerDuesTotal;
-  const supplierDue = dashboard.alerts.supplierDuesTotal;
-
-  const lowStockCount = purchaseList.filter((p: any) => p.stockStatus === 'LOW_STOCK').length;
-  const outOfStockCount = purchaseList.filter((p: any) => p.stockStatus === 'OUT_OF_STOCK').length;
-  const expiringSoonCount = expiryDashboard.summary.near30Days.count;
-  const expiredCount = expiryDashboard.summary.expired.count;
-
-  const msg = [
-    '🏥 *PHARMORA DAILY SUMMARY*',
-    `📅 Date: ${dateStr}`,
-    '',
-    '📊 *Sales*',
-    `POS Sales: ${fmtINR(posSales)}`,
-    `Non-POS Sales: ${fmtINR(nonPosSales)}`,
-    `Total Sales: ${fmtINR(totalSales)}`,
-    '',
-    '💳 *Payment Breakdown*',
-    `Cash: ${fmtINR(cashPay)}`,
-    `UPI: ${fmtINR(upiPay)}`,
-    `Credit: ${fmtINR(creditPay)}`,
-    '',
-    `📦 Purchases: ${fmtINR(grossPurchases)}`,
-    `💸 Expenses: ${fmtINR(totalExpenses)}`,
-    '',
-    '💵 *Cash Drawer*',
-    `Inflows: ${fmtINR(drawerOpening)}`,
-    `Expected: ${fmtINR(drawerExpected)}`,
-    `Actual: ${drawerActual !== null ? fmtINR(drawerActual) : 'Pending Closing'}`,
-    `Difference: ${drawerDiff !== null ? fmtINR(drawerDiff) : '—'}`,
-    '',
-    '👥 *Outstanding Dues*',
-    `Customer Due: ${fmtINR(customerDue)}`,
-    `Supplier Due: ${fmtINR(supplierDue)}`,
-    '',
-    '⚠️ *Alerts*',
-    `Low Stock: ${lowStockCount + outOfStockCount} items (${outOfStockCount} out of stock)`,
-    `Expiring Soon (<=30d): ${expiringSoonCount} batches`,
-    `Expired: ${expiredCount} batches`,
-  ].join('\n');
-
-  return sendTelegramRawMessage(
-    msg,
-    undefined,
-    client,
-    { eventType: 'DAILY_SUMMARY', entityType: 'Report', userId: actorId },
-  );
-};
-
-/**
- * 3. Purchase Recorded Notification
- */
-export const sendPurchaseSummary = async (
-  purchaseId: string,
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const db = database(client);
-  const purchase = await db.purchase.findUnique({
-    where: { id: purchaseId },
-    include: {
-      supplier: true,
-      items: { include: { product: true } },
-    },
-  });
-
-  if (!purchase) {
-    return { success: false, error: 'Purchase record not found' };
+export const sendDailySummary = async (dateInput?: string | Date, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.dailySummary) {
+    return { success: false, error: 'Daily summary notification preference is turned off' };
   }
 
-  const supplierName = purchase.supplier.name;
-  const invoiceNumber = purchase.invoiceNumber;
-  const dateStr = new Date(purchase.invoiceDate).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  });
-
-  const lines = [
-    '📦 *PURCHASE RECORDED*',
-    '',
-    `Supplier: ${supplierName}`,
-    `Invoice: #${invoiceNumber}`,
-    `Date: ${dateStr}`,
-    '',
-    'Items:',
-  ];
-
-  for (const item of purchase.items) {
-    lines.push(`• ${item.product.name} × ${item.quantity + item.freeQty}`);
-  }
-
-  lines.push('');
-  lines.push(`Total: ${fmtINR(Number(purchase.totalAmount))}`);
-  lines.push(`Payment: ${purchase.paymentMethod || 'PENDING'} (Paid: ${fmtINR(Number(purchase.paidAmount))})`);
-  lines.push(`Supplier Outstanding: ${fmtINR(Number(purchase.supplier.outstanding))}`);
-
-  const msg = lines.join('\n');
-
-  return sendTelegramRawMessage(
-    msg,
-    undefined,
-    client,
-    { eventType: 'PURCHASE_NOTIFICATION', entityType: 'Purchase', entityId: purchaseId, userId: actorId },
-  );
-};
-
-/**
- * 4. Expense Recorded Notification
- */
-export const sendExpenseSummary = async (
-  expenseId: string,
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const db = database(client);
-  const expense = await db.expense.findUnique({
-    where: { id: expenseId },
-  });
-
-  if (!expense) {
-    return { success: false, error: 'Expense record not found' };
-  }
-
-  const dateStr = new Date(expense.expenseDate).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-  });
-
-  const lines = [
-    '💸 *EXPENSE RECORDED*',
-    '',
-    `Category: ${expense.category}`,
-    `Amount: ${fmtINR(Number(expense.amount))}`,
-    `Payment: ${expense.paymentMethod}`,
-    expense.description ? `Description: ${expense.description}` : '',
-    `Date: ${dateStr}`,
-  ].filter(Boolean);
-
-  const msg = lines.join('\n');
-
-  return sendTelegramRawMessage(
-    msg,
-    undefined,
-    client,
-    { eventType: 'EXPENSE_NOTIFICATION', entityType: 'Expense', entityId: expenseId, userId: actorId },
-  );
-};
-
-/**
- * 5. Daily Closing Notification
- */
-export const sendDailyClosingSummary = async (
-  closingDateInput: Date | string,
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const db = database(client);
-  const targetDate = typeof closingDateInput === 'string' ? new Date(closingDateInput) : closingDateInput;
-  const closingDateStr = targetDate.toISOString().slice(0, 10);
-
-  const [closing, cashSummary] = await Promise.all([
-    getDailyClosing(closingDateStr, client).catch(() => null),
-    getDailyCashSummary(targetDate, client).catch(() => null),
+  const [sales, purchase, expense, cashbook, analytics] = await Promise.all([
+    getSalesReport({ preset: 'TODAY' }, client, shopId),
+    getPurchaseReport({ preset: 'TODAY' }, client, shopId),
+    getExpenseReport({ preset: 'TODAY' }, client, shopId),
+    getCashbookReport({ preset: 'TODAY' }, client, shopId),
+    getDashboardAnalytics(client, shopId),
   ]);
 
-  const dateFormatted = targetDate.toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: '2-digit',
+  const dateStr = new Date().toLocaleDateString('en-IN', {
+    weekday: 'short',
     year: 'numeric',
+    month: 'short',
+    day: 'numeric',
   });
 
-  const opening = closing?.openingCash ?? cashSummary?.openingCash ?? 0;
-  const inflows = closing?.cashInflows ?? cashSummary?.cashInflows ?? 0;
-  const outflows = closing?.cashOutflows ?? cashSummary?.cashOutflows ?? 0;
-  const expected = closing?.expectedCash ?? cashSummary?.expectedDrawerCash ?? 0;
-  const actual = closing?.actualCash ?? 0;
-  const diff = closing?.difference ?? 0;
-  const status = closing?.status ?? 'PENDING';
-
   const lines = [
-    '🔒 *DAILY CLOSING REPORT*',
-    `Date: ${dateFormatted}`,
-    '',
-    `Opening Cash: ${fmtINR(opening)}`,
-    `Total Cash In: ${fmtINR(inflows)}`,
-    `Total Cash Out: ${fmtINR(outflows)}`,
-    '',
-    `Expected Drawer: ${fmtINR(expected)}`,
-    `Actual Drawer: ${fmtINR(actual)}`,
-    `Difference: ${fmtINR(diff)}`,
-    '',
-    `Status: *${status}*`,
+    `📊 <b>PHARMORA DAILY SUMMARY</b>`,
+    `📅 <i>${dateStr}</i>`,
+    ``,
+    `💰 <b>Sales</b>`,
+    `• Total Sales: <b>${fmtINR(sales.summary.grossSales)}</b>`,
+    `• Invoices: ${sales.summary.invoiceCount} (Avg: ${fmtINR(sales.summary.averageInvoiceValue)})`,
+    ``,
+    `💳 <b>Payment Breakdown:</b>`,
+    `  - Cash: ${fmtINR(sales.summary.cashSales)}`,
+    `  - UPI/Bank: ${fmtINR(sales.summary.upiSales)}`,
+    `  - Credit/Dues: ${fmtINR(sales.summary.creditSales)}`,
+    ``,
+    `📦 <b>Purchases & Expenses</b>`,
+    `• Purchases: ${fmtINR(purchase.summary.grossPurchases)} (${purchase.summary.invoiceCount} bills)`,
+    `• Expenses: ${fmtINR(expense.summary.totalExpenses)} (${expense.summary.expenseCount} entries)`,
+    ``,
+    `💵 <b>Cash Drawer & Digital</b>`,
+    `• Expected Cash: ${fmtINR(cashbook.cash.expectedCash)}`,
+    `• Net Bank Inflow: ${fmtINR(cashbook.bank.netBankFlow)}`,
+    ``,
+    `⚠️ <b>Alerts</b>`,
+    `• Low stock / expiry monitoring active`,
+    ``,
+    `🎯 <b>Target Progress:</b> ${analytics.monthly.progressPercentage}% (${fmtINR(analytics.monthly.completedSales)} / ${fmtINR(analytics.monthly.target)})`,
+    ``,
+    `<i>Sent automatically by Pharmora POS</i>`,
   ];
 
-  if (closing?.notes) {
-    lines.push(`Notes: ${closing.notes}`);
-  }
-
   const msg = lines.join('\n');
-
   return sendTelegramRawMessage(
     msg,
-    undefined,
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'DAILY_CLOSING_NOTIFICATION', entityType: 'DailyClosing', userId: actorId },
+    { eventType: 'DAILY_SUMMARY', userId: actorId, shopId },
   );
 };
 
 /**
- * 6. Low Stock Alert
+ * 2. Purchase Notification Message
  */
-export const sendLowStockAlert = async (
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const purchaseList = await getPurchaseList({ filter: 'LOW_STOCK' }, client);
-
-  const outOfStock = purchaseList.filter((p: any) => p.stockStatus === 'OUT_OF_STOCK');
-  const lowStock = purchaseList.filter((p: any) => p.stockStatus === 'LOW_STOCK');
-
-  if (outOfStock.length === 0 && lowStock.length === 0) {
-    const msg = '✅ *STOCK STATUS: ALL GOOD*\n\nAll active products have healthy inventory levels.';
-    return sendTelegramRawMessage(msg, undefined, client, { eventType: 'LOW_STOCK_ALERT', userId: actorId });
+export const sendPurchaseNotification = async (purchaseId: string, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.purchaseNotifications) {
+    return { success: false, error: 'Purchase notifications are turned off' };
   }
+
+  const db = database(client);
+  const purchase = db.purchase.findFirst
+    ? await db.purchase.findFirst({
+        where: { id: purchaseId, shopId },
+        include: { supplier: true, items: { include: { product: true } } },
+      })
+    : await db.purchase.findUnique({
+        where: { id: purchaseId },
+        include: { supplier: true, items: { include: { product: true } } },
+      });
+
+  if (!purchase || (shopId && (purchase as any).shopId && (purchase as any).shopId !== shopId)) return { success: false, error: 'Purchase not found' };
 
   const lines = [
-    '⚠️ *LOW STOCK ALERT*',
-    `Total Items Requiring Attention: ${outOfStock.length + lowStock.length}`,
-    '',
+    `📥 <b>PURCHASE RECORDED</b>`,
+    ``,
+    `• Invoice No: <b>#${purchase.invoiceNumber}</b>`,
+    `• Supplier: <b>${purchase.supplier?.name ?? '—'}</b>`,
+    `• Total Amount: <b>${fmtINR(purchase.totalAmount)}</b>`,
+    `• Paid Amount: ${fmtINR(purchase.paidAmount)} (${purchase.paymentMethod})`,
+    `• Balance Due: <b>${fmtINR(purchase.outstandingAmount)}</b>`,
+    `• Items Count: ${purchase.items.length}`,
+    ``,
+    `<i>Recorded on ${new Date(purchase.invoiceDate).toLocaleDateString('en-IN')}</i>`,
   ];
 
-  if (outOfStock.length > 0) {
-    lines.push('🚨 *OUT OF STOCK:*');
-    outOfStock.slice(0, 15).forEach((p: any, idx: number) => {
-      lines.push(`${idx + 1}. ${p.name} — Current: 0 | Reorder: ${p.reorderLevel} | Suggested: ${p.suggestedQuantity}`);
-    });
-    if (outOfStock.length > 15) {
-      lines.push(`... and ${outOfStock.length - 15} more out of stock items.`);
-    }
-    lines.push('');
-  }
-
-  if (lowStock.length > 0) {
-    lines.push('⚠️ *LOW STOCK:*');
-    lowStock.slice(0, 15).forEach((p: any, idx: number) => {
-      lines.push(`${idx + 1}. ${p.name} — Current: ${p.currentStock} | Reorder: ${p.reorderLevel} | Suggested: ${p.suggestedQuantity}`);
-    });
-    if (lowStock.length > 15) {
-      lines.push(`... and ${lowStock.length - 15} more low stock items.`);
-    }
-  }
-
-  const msg = lines.join('\n');
-
   return sendTelegramRawMessage(
-    msg,
-    undefined,
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'LOW_STOCK_ALERT', userId: actorId },
+    { eventType: 'PURCHASE', entityType: 'Purchase', entityId: purchaseId, userId: actorId, shopId },
   );
 };
 
 /**
- * 7. Expiry Alert
+ * 3. Expense Notification Message
  */
-export const sendExpiryAlert = async (
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const dashboard = await getExpiryDashboard(new Date(), client);
-  const { expired, near30Days, near60Days, near90Days } = dashboard.summary;
-
-  const totalFlagged = expired.count + near30Days.count + near60Days.count + near90Days.count;
-  if (totalFlagged === 0) {
-    const msg = '✅ *EXPIRY STATUS: ALL CLEAR*\n\nNo batches expired or nearing expiry in the next 90 days.';
-    return sendTelegramRawMessage(msg, undefined, client, { eventType: 'EXPIRY_ALERT', userId: actorId });
+export const sendExpenseSummary = async (expenseId: string, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.expenseNotifications) {
+    return { success: false, error: 'Expense notifications are turned off' };
   }
+
+  const db = database(client);
+  const expense = db.expense.findFirst
+    ? await db.expense.findFirst({
+        where: { id: expenseId, shopId },
+        include: { createdBy: { select: { name: true } } },
+      })
+    : await db.expense.findUnique({
+        where: { id: expenseId },
+        include: { createdBy: { select: { name: true } } },
+      });
+
+  if (!expense || (shopId && (expense as any).shopId && (expense as any).shopId !== shopId)) return { success: false, error: 'Expense not found' };
 
   const lines = [
-    '⚠️ *BATCH EXPIRY ALERT*',
-    '',
-    `🔴 Expired: ${expired.count} batches (${expired.units} units — ${fmtINR(expired.totalCost)})`,
-    `🟠 0–30 Days: ${near30Days.count} batches (${near30Days.units} units — ${fmtINR(near30Days.totalCost)})`,
-    `🟡 31–60 Days: ${near60Days.count} batches (${near60Days.units} units — ${fmtINR(near60Days.totalCost)})`,
-    `🔵 61–90 Days: ${near90Days.count} batches (${near90Days.units} units — ${fmtINR(near90Days.totalCost)})`,
-    '',
-  ];
-
-  if (expired.count > 0) {
-    lines.push('🚨 *Top Expired Batches:*');
-    dashboard.batches.expired.slice(0, 5).forEach((b: any) => {
-      lines.push(`• ${b.productName} (Batch: ${b.batchNumber}) — ${b.quantity} pcs (${fmtINR(b.totalCostValue)})`);
-    });
-    lines.push('');
-  }
-
-  if (near30Days.count > 0) {
-    lines.push('⚠️ *Top Expiring Soon (< 30 Days):*');
-    dashboard.batches.near30Days.slice(0, 5).forEach((b: any) => {
-      lines.push(`• ${b.productName} (Batch: ${b.batchNumber}) — ${b.quantity} pcs in ${b.daysUntilExpiry}d (${fmtINR(b.totalCostValue)})`);
-    });
-  }
-
-  const msg = lines.join('\n');
+    `💸 <b>NEW EXPENSE RECORDED</b>`,
+    ``,
+    `• Category: <b>${expense.category}</b>`,
+    `• Amount: <b>${fmtINR(expense.amount)}</b>`,
+    `• Mode: ${expense.paymentMethod}`,
+    expense.description ? `• Note: <i>${expense.description}</i>` : '',
+    expense.createdBy?.name ? `• Recorded by: ${expense.createdBy.name}` : '',
+    ``,
+    `<i>${new Date(expense.expenseDate).toLocaleDateString('en-IN')}</i>`,
+  ].filter(Boolean);
 
   return sendTelegramRawMessage(
-    msg,
-    undefined,
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'EXPIRY_ALERT', userId: actorId },
+    { eventType: 'EXPENSE', entityType: 'Expense', entityId: expenseId, userId: actorId, shopId },
   );
 };
 
 /**
- * 8. Customer Due Alert
+ * 4. Daily Closing Summary Message
  */
-export const sendCustomerDueSummary = async (
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const report = await getCustomerOutstandingReport(client);
-  const customersWithDues = report.customers.filter((c) => c.outstanding > 0);
-
-  const lines = [
-    '👥 *CUSTOMER OUTSTANDING DUES*',
-    '',
-    `Total Outstanding: ${fmtINR(report.summary.totalOutstanding)}`,
-    `Customers with Dues: ${customersWithDues.length}`,
-    '',
-  ];
-
-  if (customersWithDues.length > 0) {
-    lines.push('*Top Customer Dues:*');
-    customersWithDues.slice(0, 10).forEach((c, idx) => {
-      lines.push(`${idx + 1}. ${c.name} — ${fmtINR(c.outstanding)}${c.phone ? ` (${c.phone})` : ''}`);
-    });
-    if (customersWithDues.length > 10) {
-      lines.push(`... and ${customersWithDues.length - 10} more customers.`);
-    }
-  } else {
-    lines.push('All customer credit accounts are fully settled.');
+export const sendDailyClosingSummary = async (closingDate: Date | string, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.dailyClosing) {
+    return { success: false, error: 'Daily closing notifications are turned off' };
   }
 
-  const msg = lines.join('\n');
+  const closing = await getDailyClosing(closingDate, client, shopId);
+  if (!closing) return { success: false, error: 'Closing not found' };
+
+  const diffNum = Number(closing.difference);
+  const statusEmoji = closing.status === 'BALANCED' ? '✅' : diffNum > 0 ? '🟢' : '🔴';
+
+  const lines = [
+    `🔒 <b>DAILY DRAWER CLOSING SUMMARY</b>`,
+    `📅 <i>${new Date(closing.closingDate).toLocaleDateString('en-IN')}</i>`,
+    ``,
+    `• Opening Cash: ${fmtINR(closing.openingCash)}`,
+    `• Cash Inflows: ${fmtINR(closing.cashInflows)}`,
+    `• Cash Outflows: ${fmtINR(closing.cashOutflows)}`,
+    `• Expected Cash: <b>${fmtINR(closing.expectedCash)}</b>`,
+    `• Actual Counted: <b>${fmtINR(closing.actualCash)}</b>`,
+    ``,
+    `• Discrepancy: ${statusEmoji} <b>${fmtINR(diffNum)} (${closing.status})</b>`,
+    (closing as any).closedBy?.name ? `• Closed by: ${(closing as any).closedBy.name}` : '',
+    closing.notes ? `• Notes: <i>${closing.notes}</i>` : '',
+  ].filter(Boolean);
 
   return sendTelegramRawMessage(
-    msg,
-    undefined,
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'CUSTOMER_DUES_ALERT', userId: actorId },
+    { eventType: 'DAILY_CLOSING', entityType: 'DailyClosing', entityId: closing.id, userId: actorId, shopId },
   );
 };
 
 /**
- * 9. Supplier Due Alert
+ * 5. Low Stock Alert Message
  */
-export const sendSupplierDueSummary = async (
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
-  const report = await getSupplierOutstandingReport(client);
-  const suppliersWithDues = report.suppliers.filter((s) => s.outstanding > 0);
-
-  const lines = [
-    '🏢 *SUPPLIER OUTSTANDING PAYABLES*',
-    '',
-    `Total Outstanding: ${fmtINR(report.summary.totalPayable)}`,
-    `Suppliers with Payables: ${suppliersWithDues.length}`,
-    '',
-  ];
-
-  if (suppliersWithDues.length > 0) {
-    lines.push('*Top Supplier Payables:*');
-    suppliersWithDues.slice(0, 10).forEach((s, idx) => {
-      lines.push(`${idx + 1}. ${s.name} — ${fmtINR(s.outstanding)}`);
-    });
-    if (suppliersWithDues.length > 10) {
-      lines.push(`... and ${suppliersWithDues.length - 10} more suppliers.`);
-    }
-  } else {
-    lines.push('All supplier accounts are fully settled.');
+export const sendLowStockAlert = async (client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.lowStockAlert) {
+    return { success: false, error: 'Low stock alerts are turned off' };
   }
 
-  const msg = lines.join('\n');
+  const purchaseList = await getPurchaseList({ filter: 'LOW_STOCK', shopId }, client, shopId);
+  if (purchaseList.length === 0) {
+    return { success: false, error: 'No low stock items currently' };
+  }
+
+  const lines = [
+    `⚠️ <b>LOW STOCK ALERT — OUT OF STOCK ITEMS</b>`,
+    `Found <b>${purchaseList.length}</b> products needing reorder:`,
+    ``,
+  ];
+
+  purchaseList.slice(0, 15).forEach((p, idx) => {
+    const status = p.stockStatus === 'OUT_OF_STOCK' ? '🔴 OUT' : '🟠 LOW';
+    lines.push(`${idx + 1}. <b>${p.name}</b> — Stock: ${p.currentStock} / Reorder: ${p.reorderLevel} [${status}] (Order: ${p.suggestedQuantity})`);
+  });
+
+  if (purchaseList.length > 15) {
+    lines.push(``);
+    lines.push(`<i>...and ${purchaseList.length - 15} more items in Purchase Order recommendations.</i>`);
+  }
 
   return sendTelegramRawMessage(
-    msg,
-    undefined,
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'SUPPLIER_DUES_ALERT', userId: actorId },
+    { eventType: 'LOW_STOCK', userId: actorId, shopId },
   );
 };
 
 /**
- * 10. Monthly Business Summary Notification
+ * 6. Expiry Alert Message
  */
-export const sendMonthlySummary = async (
-  year?: number,
-  month?: number,
-  client?: DbClient,
-  actorId?: string,
-): Promise<SendResult> => {
+export const sendExpiryAlert = async (client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.expiryAlert) {
+    return { success: false, error: 'Expiry alerts are turned off' };
+  }
+
+  const expiry = await getExpiryDashboard(undefined, client, shopId);
+  const expiredCount = expiry.summary.expired.count;
+  const days30Count = expiry.summary.near30Days.count;
+
+  if (expiredCount === 0 && days30Count === 0) {
+    return { success: false, error: 'No expired or near-expiry medicines currently' };
+  }
+
+  const lines = [
+    `⏰ <b>BATCH EXPIRY ALERT</b>`,
+    ``,
+    `• Expired: <b>${expiredCount}</b> (Valuation: ${fmtINR(expiry.summary.expired.totalCost)})`,
+    `• 0–30 Days: <b>${days30Count}</b> (Valuation: ${fmtINR(expiry.summary.near30Days.totalCost)})`,
+    ``,
+  ];
+
+  if (expiry.batches.expired.length > 0) {
+    lines.push(`<b>Expired Items:</b>`);
+    expiry.batches.expired.slice(0, 5).forEach((b: any) => {
+      lines.push(`• <s>${b.product?.name || 'Product'}</s> (Batch: ${b.batchNumber}, Qty: ${b.quantity})`);
+    });
+    lines.push(``);
+  }
+
+  if (expiry.batches.near30Days.length > 0) {
+    lines.push(`<b>Expiring Soon (Next 30 Days):</b>`);
+    expiry.batches.near30Days.slice(0, 5).forEach((b: any) => {
+      lines.push(`• ${b.product?.name || 'Product'} (Batch: ${b.batchNumber}, Qty: ${b.quantity}) - Exp: ${b.expiryDate ? new Date(b.expiryDate).toLocaleDateString('en-IN') : 'N/A'}`);
+    });
+  }
+
+  return sendTelegramRawMessage(
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
+    client,
+    { eventType: 'EXPIRY_ALERT', userId: actorId, shopId },
+  );
+};
+
+/**
+ * 7. Customer Dues Summary Message
+ */
+export const sendCustomerDuesSummary = async (client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.customerDues) {
+    return { success: false, error: 'Customer dues notifications are turned off' };
+  }
+
+  const dues = await getCustomerOutstandingReport(client, shopId);
+  if (dues.customers.length === 0) {
+    return { success: false, error: 'No customers with pending dues' };
+  }
+
+  const lines = [
+    `👥 <b>CUSTOMER OUTSTANDING DUES SUMMARY</b>`,
+    ``,
+    `• Total Outstanding: <b>${fmtINR(dues.summary.totalOutstanding)}</b>`,
+    `• Customers with Dues: <b>${dues.summary.customerCountWithDues}</b>`,
+    ``,
+    `<b>Top Pending Accounts:</b>`,
+  ];
+
+  dues.customers.slice(0, 10).forEach((c, idx) => {
+    lines.push(`${idx + 1}. <b>${c.name}</b> — <b>${fmtINR(c.outstanding)}</b> ${c.phone ? `(${c.phone})` : ''}`);
+  });
+
+  return sendTelegramRawMessage(
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
+    client,
+    { eventType: 'CUSTOMER_DUES', userId: actorId, shopId },
+  );
+};
+
+/**
+ * 8. Supplier Dues Summary Message
+ */
+export const sendSupplierDuesSummary = async (client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.supplierDues) {
+    return { success: false, error: 'Supplier dues notifications are turned off' };
+  }
+
+  const dues = await getSupplierOutstandingReport(client, shopId);
+  if (dues.suppliers.length === 0) {
+    return { success: false, error: 'No supplier payables currently' };
+  }
+
+  const lines = [
+    `🏢 <b>SUPPLIER OUTSTANDING PAYABLES SUMMARY</b>`,
+    ``,
+    `• Total Payable: <b>${fmtINR(dues.summary.totalPayable)}</b>`,
+    `• Suppliers Due: <b>${dues.summary.supplierCountWithDues}</b>`,
+    ``,
+    `<b>Top Payables:</b>`,
+  ];
+
+  dues.suppliers.slice(0, 10).forEach((s, idx) => {
+    lines.push(`${idx + 1}. <b>${s.name}</b> — <b>${fmtINR(s.outstanding)}</b>`);
+  });
+
+  return sendTelegramRawMessage(
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
+    client,
+    { eventType: 'SUPPLIER_DUES', userId: actorId, shopId },
+  );
+};
+
+/**
+ * 9. Monthly Summary Message
+ */
+export const sendMonthlySummary = async (yearInput?: number, monthInput?: number, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  const config = await getTelegramConfig(client, shopId);
+  if (!config.preferences.monthlySummary) {
+    return { success: false, error: 'Monthly summary notifications are turned off' };
+  }
+
   const now = new Date();
-  const targetYear = year ?? (now.getDate() === 1 ? (now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear()) : now.getFullYear());
-  const targetMonth = month ?? (now.getDate() === 1 ? (now.getMonth() === 0 ? 12 : now.getMonth()) : now.getMonth() + 1);
+  const year = yearInput ?? now.getUTCFullYear();
+  const month = monthInput ?? now.getUTCMonth() + 1;
 
-  // Calculate month date range
-  const startDate = new Date(Date.UTC(targetYear, targetMonth - 1, 1, 0, 0, 0, 0));
-  const endDate = new Date(Date.UTC(targetYear, targetMonth, 0, 23, 59, 59, 999));
+  const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
+  const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
 
-  const filter = { startDate, endDate, preset: 'CUSTOM' as const };
+  const [sales, purchase, expense, profit, target, gst] = await Promise.all([
+    getSalesReport({ preset: 'CUSTOM', startDate: startOfMonth, endDate: endOfMonth }, client, shopId),
+    getPurchaseReport({ preset: 'CUSTOM', startDate: startOfMonth, endDate: endOfMonth }, client, shopId),
+    getExpenseReport({ preset: 'CUSTOM', startDate: startOfMonth, endDate: endOfMonth }, client, shopId),
+    getProfitReport({ preset: 'CUSTOM', startDate: startOfMonth, endDate: endOfMonth }, client, shopId),
+    getMonthlySalesTarget(client, shopId),
+    getGstReport({ preset: 'CUSTOM', startDate: startOfMonth, endDate: endOfMonth }, client, shopId),
+  ]);
 
-  const [salesReport, purchaseReport, expenseReport, profitReport, gstReport, valuationReport, custReport, suppReport, cashbookReport] =
-    await Promise.all([
-      getSalesReport(filter, client),
-      getPurchaseReport(filter, client),
-      getExpenseReport(filter, client),
-      getProfitReport(filter, client),
-      getGstReport(filter, client),
-      getInventoryValuationReport({}, client),
-      getCustomerOutstandingReport(client),
-      getSupplierOutstandingReport(client),
-      getCashbookReport(filter, client),
-    ]);
+  const monthName = startOfMonth.toLocaleString('en-IN', { month: 'long', year: 'numeric' });
 
-  const monthLabel = startDate.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' });
-
-  const msg = [
-    `📊 *MONTHLY BUSINESS SUMMARY (${monthLabel})*`,
-    '',
-    '🛒 *Sales & Revenue*',
-    `Gross Sales: ${fmtINR(salesReport.summary.grossSales)}`,
-    `Sales Returns: -${fmtINR(salesReport.summary.salesReturns)}`,
-    `*Net Sales: ${fmtINR(salesReport.summary.netSales)}*`,
-    '',
-    '📦 *Purchases & Expenses*',
-    `Purchases: ${fmtINR(purchaseReport.summary.grossPurchases)}`,
-    `Purchase Returns: -${fmtINR(purchaseReport.summary.purchaseReturns)}`,
-    `Operating Expenses: ${fmtINR(expenseReport.summary.totalExpenses)}`,
-    '',
-    '📈 *Profitability (COGS)*',
-    `Cost of Goods Sold (COGS): ${fmtINR(profitReport.summary.cogs.totalCogs)}`,
-    `*Gross Profit: ${fmtINR(profitReport.summary.grossProfit)} (${profitReport.summary.grossMarginPercentage}%)*`,
-    `*Net Profit: ${fmtINR(profitReport.summary.netProfit)} (${profitReport.summary.netMarginPercentage}%)*`,
-    '',
-    '💵 *Liquidity & Cash Position*',
-    `Cash Inflows: ${fmtINR(cashbookReport.cash.inflows)}`,
-    `Cash Outflows: ${fmtINR(cashbookReport.cash.outflows)}`,
-    `Bank/UPI Inflows: ${fmtINR(cashbookReport.bank.inflows)}`,
-    '',
-    '⚖️ *Ledger Outstandings*',
-    `Customer Outstanding: ${fmtINR(custReport.summary.totalOutstanding)}`,
-    `Supplier Outstanding: ${fmtINR(suppReport.summary.totalPayable)}`,
-    `Inventory Valuation (Cost): ${fmtINR(valuationReport.summary.costValuation)}`,
-    '',
-    '🏛️ *GST Position*',
-    `Output GST: ${fmtINR(gstReport.summary.outputGst.netOutputGst)}`,
-    `Input GST: ${fmtINR(gstReport.summary.inputGst.netInputGst)}`,
-    `Net GST Position: ${fmtINR(gstReport.summary.netGstPayable)}`,
-  ].join('\n');
+  const lines = [
+    `📈 <b>PHARMORA POS — MONTHLY BUSINESS SUMMARY</b>`,
+    `🗓 <b>${monthName}</b>`,
+    ``,
+    `💰 <b>SALES & REVENUE</b>`,
+    `• Net Sales: <b>${fmtINR(sales.summary.netSales)}</b>`,
+    `• Cost of Goods Sold: ${fmtINR(profit.summary.cogs.totalCogs)}`,
+    `• Gross Profit: <b>${fmtINR(profit.summary.grossProfit)} (${profit.summary.grossMarginPercentage}%)</b>`,
+    `• Net Profit: <b>${fmtINR(profit.summary.netProfit)} (${profit.summary.netMarginPercentage}%)</b>`,
+    ``,
+    `📦 <b>PURCHASES & EXPENSES</b>`,
+    `• Total Purchases: ${fmtINR(purchase.summary.netPurchases)}`,
+    `• Operating Expenses: ${fmtINR(expense.summary.totalExpenses)}`,
+    ``,
+    `⚖️ <b>GST POSITION</b>`,
+    `• Net GST Position: <b>${fmtINR(gst.summary.netGstPayable)}</b>`,
+    ``,
+    `🎯 <b>SALES TARGET STATUS</b>`,
+    `• Target: ${fmtINR(target.target)}`,
+    `• Achieved: ${fmtINR(target.completedSales)} (${target.progressPercentage}%)`,
+    target.remainingSales === 0 ? `🎉 <b>Monthly Target Achieved!</b>` : `• Shortfall: ${fmtINR(target.remainingSales)}`,
+  ];
 
   return sendTelegramRawMessage(
-    msg,
-    undefined,
+    lines.join('\n'),
+    { parseMode: 'HTML', shopId },
     client,
-    { eventType: 'MONTHLY_SUMMARY', entityType: 'Report', userId: actorId },
+    { eventType: 'MONTHLY_SUMMARY', userId: actorId, shopId },
+  );
+};
+
+export const sendPurchaseSummary = sendPurchaseNotification;
+export const sendCustomerDueSummary = sendCustomerDuesSummary;
+export const sendSupplierDueSummary = sendSupplierDuesSummary;
+
+export const testTelegramConnection = async (client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora'): Promise<SendResult> => {
+  return sendTelegramRawMessage(
+    '🔔 <b>Test Notification from Pharmora POS</b>\n\nYour Telegram bot integration is working successfully!',
+    { parseMode: 'HTML', force: true, shopId },
+    client,
+    { eventType: 'TEST_CONNECTION', userId: actorId, shopId },
   );
 };

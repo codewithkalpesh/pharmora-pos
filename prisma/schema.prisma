@@ -82,8 +82,53 @@ enum NotificationType {
   SYSTEM
 }
 
+model Shop {
+  id                String   @id @default(cuid())
+  name              String
+  ownerName         String?
+  email             String?
+  phone             String?
+  address           String?
+  city              String?
+  state             String?
+  pincode           String?
+  gstin             String?
+  drugLicenseNumber String?
+  isActive          Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  users             User[]
+  categories        Category[]
+  suppliers         Supplier[]
+  customers         Customer[]
+  products          Product[]
+  productBatches    ProductBatch[]
+  purchases         Purchase[]
+  sales             Sale[]
+  saleReturns       SaleReturn[]
+  purchaseReturns   PurchaseReturn[]
+  payments          Payment[]
+  expenses          Expense[]
+  cashbookEntries   CashbookEntry[]
+  customerPayments  CustomerPayment[]
+  customerCredits   CustomerCredit[]
+  supplierPayments  SupplierPayment[]
+  dailyClosings     DailyClosing[]
+  dailySales        DailySale[]
+  auditLogs         AuditLog[]
+  bankAccounts      BankAccount[]
+  purchaseOrders    PurchaseOrder[]
+  notifications     Notification[]
+  salesTargets      SalesTarget[]
+  reportSnapshots   ReportSnapshot[]
+  telegramEvents    TelegramEvent[]
+  settings          Setting[]
+}
+
 model User {
   id        String   @id @default(cuid())
+  shopId    String
   name      String
   email     String   @unique
   password  String
@@ -91,6 +136,8 @@ model User {
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id])
 
   roleId String
   role   Role @relation(fields: [roleId], references: [id])
@@ -114,6 +161,8 @@ model User {
   purchaseOrders    PurchaseOrder[]
   saleReturns       SaleReturn[]
   purchaseReturns   PurchaseReturn[]
+
+  @@index([shopId])
 }
 
 model Role {
@@ -124,15 +173,22 @@ model Role {
 
 model Category {
   id        String   @id @default(cuid())
-  name      String   @unique
+  shopId    String
+  name      String
   active    Boolean  @default(true)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
-  products  Product[]
+
+  shop     Shop      @relation(fields: [shopId], references: [id])
+  products Product[]
+
+  @@unique([name, shopId])
+  @@index([shopId])
 }
 
 model Supplier {
   id            String     @id @default(cuid())
+  shopId        String
   name          String
   phone         String?
   gstin         String?
@@ -143,16 +199,20 @@ model Supplier {
   createdAt     DateTime   @default(now())
   updatedAt     DateTime   @updatedAt
 
+  shop             Shop              @relation(fields: [shopId], references: [id])
   purchases        Purchase[]
   products         Product[]
   productBatches   ProductBatch[]
   supplierPayments SupplierPayment[]
   purchaseOrders   PurchaseOrder[]
   purchaseReturns  PurchaseReturn[]
+
+  @@index([shopId])
 }
 
 model Customer {
   id          String     @id @default(cuid())
+  shopId      String
   name        String
   phone       String?
   address     String?
@@ -161,19 +221,23 @@ model Customer {
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 
+  shop            Shop              @relation(fields: [shopId], references: [id])
   sales           Sale[]
   payments        CustomerPayment[]
   customerCredits CustomerCredit[]
   saleReturns     SaleReturn[]
+
+  @@index([shopId])
 }
 
 model Product {
   id            String         @id @default(cuid())
+  shopId        String
   name          String
   genericName   String?
   brand         String?
-  barcode       String?        @unique
-  sku           String?        @unique
+  barcode       String?
+  sku           String?
   hsn           String?
   gst           Decimal?       @db.Decimal(10, 2)
   mrp           Decimal?       @db.Decimal(12, 2)
@@ -189,6 +253,7 @@ model Product {
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
+  shop           Shop             @relation(fields: [shopId], references: [id])
   category       Category?        @relation(fields: [categoryId], references: [id])
   supplier       Supplier?        @relation(fields: [supplierId], references: [id])
   batches        ProductBatch[]
@@ -199,6 +264,9 @@ model Product {
   saleItems      SaleItem[]
   saleReturnItems SaleReturnItem[]
 
+  @@unique([barcode, shopId])
+  @@unique([sku, shopId])
+  @@index([shopId])
   @@index([name])
   @@index([genericName])
   @@index([brand])
@@ -206,6 +274,7 @@ model Product {
 
 model ProductBatch {
   id           String    @id @default(cuid())
+  shopId       String
   productId    String
   batchNumber  String
   purchaseDate DateTime?
@@ -220,6 +289,7 @@ model ProductBatch {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
+  shop           Shop            @relation(fields: [shopId], references: [id])
   product        Product         @relation(fields: [productId], references: [id])
   supplier       Supplier?       @relation(fields: [supplierId], references: [id])
   stockMovements StockMovement[]
@@ -229,6 +299,7 @@ model ProductBatch {
   saleReturnItems SaleReturnItem[]
 
   @@unique([productId, batchNumber])
+  @@index([shopId])
 }
 
 model StockMovement {
@@ -253,6 +324,7 @@ model StockMovement {
 
 model Purchase {
   id                  String        @id @default(cuid())
+  shopId              String
   supplierId          String
   invoiceNumber       String
   invoiceDate         DateTime
@@ -266,12 +338,15 @@ model Purchase {
   createdAt           DateTime      @default(now())
   updatedAt           DateTime      @updatedAt
 
+  shop           Shop             @relation(fields: [shopId], references: [id])
   supplier       Supplier         @relation(fields: [supplierId], references: [id])
   createdBy      User?            @relation(fields: [createdById], references: [id])
   items          PurchaseItem[]
   returns        PurchaseReturn[]
   supplierPayments SupplierPayment[]
   payments       Payment[]
+
+  @@index([shopId])
 }
 
 model PurchaseItem {
@@ -296,6 +371,7 @@ model PurchaseItem {
 
 model Sale {
   id             String        @id @default(cuid())
+  shopId         String
   saleNumber     String?
   saleType       String        @default("POS")
   saleDate       DateTime      @default(now())
@@ -309,12 +385,15 @@ model Sale {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
+  shop     Shop      @relation(fields: [shopId], references: [id])
   customer Customer? @relation(fields: [customerId], references: [id])
   createdBy User?     @relation(fields: [createdById], references: [id])
   items    SaleItem[]
   returns  SaleReturn[]
   payments Payment[]
   credits  CustomerCredit[]
+
+  @@index([shopId])
 }
 
 model SaleItem {
@@ -335,6 +414,7 @@ model SaleItem {
 
 model SaleReturn {
   id             String         @id @default(cuid())
+  shopId         String
   returnNumber   String?        @unique
   saleId         String
   customerId     String?
@@ -348,10 +428,13 @@ model SaleReturn {
   createdAt      DateTime       @default(now())
   updatedAt      DateTime       @updatedAt
 
+  shop      Shop             @relation(fields: [shopId], references: [id])
   sale      Sale             @relation(fields: [saleId], references: [id])
   customer  Customer?        @relation(fields: [customerId], references: [id])
   createdBy User?            @relation(fields: [createdById], references: [id])
   items     SaleReturnItem[]
+
+  @@index([shopId])
 }
 
 model SaleReturnItem {
@@ -379,6 +462,7 @@ model SaleReturnItem {
 
 model PurchaseReturn {
   id             String               @id @default(cuid())
+  shopId         String
   returnNumber   String?              @unique
   purchaseId     String?
   supplierId     String
@@ -392,10 +476,13 @@ model PurchaseReturn {
   createdAt      DateTime             @default(now())
   updatedAt      DateTime             @updatedAt
 
+  shop      Shop                 @relation(fields: [shopId], references: [id])
   supplier  Supplier             @relation(fields: [supplierId], references: [id])
   purchase  Purchase?            @relation(fields: [purchaseId], references: [id])
   createdBy User?                @relation(fields: [createdById], references: [id])
   items     PurchaseReturnItem[]
+
+  @@index([shopId])
 }
 
 model PurchaseReturnItem {
@@ -423,6 +510,7 @@ model PurchaseReturnItem {
 
 model Payment {
   id             String        @id @default(cuid())
+  shopId         String
   saleId         String?
   purchaseId     String?
   paymentMethod  PaymentMethod
@@ -438,11 +526,14 @@ model Payment {
   createdById    String?
   createdAt      DateTime      @default(now())
 
+  shop        Shop          @relation(fields: [shopId], references: [id])
   sale        Sale?         @relation(fields: [saleId], references: [id])
   purchase    Purchase?     @relation(fields: [purchaseId], references: [id])
   createdBy   User?         @relation(fields: [createdById], references: [id])
   splits      PaymentSplit[]
   cashbookEntries CashbookEntry[]
+
+  @@index([shopId])
 }
 
 model PaymentSplit {
@@ -457,6 +548,7 @@ model PaymentSplit {
 
 model Expense {
   id             String        @id @default(cuid())
+  shopId         String
   category       String
   amount         Decimal       @db.Decimal(12, 2)
   expenseDate    DateTime      @default(now())
@@ -471,11 +563,15 @@ model Expense {
   createdById    String?
   createdAt      DateTime      @default(now())
 
+  shop      Shop  @relation(fields: [shopId], references: [id])
   createdBy User? @relation(fields: [createdById], references: [id])
+
+  @@index([shopId])
 }
 
 model CashbookEntry {
   id            String               @id @default(cuid())
+  shopId        String
   entryType     CashbookEntryType
   direction     CashbookDirection
   amount        Decimal              @db.Decimal(12, 2)
@@ -491,12 +587,16 @@ model CashbookEntry {
   idempotencyKey String?             @unique
   createdAt     DateTime             @default(now())
 
+  shop      Shop    @relation(fields: [shopId], references: [id])
   createdBy User?   @relation(fields: [createdById], references: [id])
   payment   Payment? @relation(fields: [paymentId], references: [id])
+
+  @@index([shopId])
 }
 
 model CustomerPayment {
   id             String        @id @default(cuid())
+  shopId         String
   customerId     String
   amount         Decimal       @db.Decimal(12, 2)
   paymentDate    DateTime      @default(now())
@@ -509,12 +609,16 @@ model CustomerPayment {
   notes          String?
   createdById    String?
 
+  shop      Shop     @relation(fields: [shopId], references: [id])
   customer  Customer @relation(fields: [customerId], references: [id])
   createdBy User?    @relation(fields: [createdById], references: [id])
+
+  @@index([shopId])
 }
 
 model CustomerCredit {
   id            String   @id @default(cuid())
+  shopId        String
   customerId    String
   saleId        String?
   description   String
@@ -527,12 +631,16 @@ model CustomerCredit {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
+  shop     Shop     @relation(fields: [shopId], references: [id])
   customer Customer @relation(fields: [customerId], references: [id])
   sale     Sale?    @relation(fields: [saleId], references: [id])
+
+  @@index([shopId])
 }
 
 model SupplierPayment {
   id             String        @id @default(cuid())
+  shopId         String
   supplierId     String
   purchaseId     String?
   amount         Decimal       @db.Decimal(12, 2)
@@ -546,14 +654,18 @@ model SupplierPayment {
   notes          String?
   createdById    String?
 
+  shop      Shop     @relation(fields: [shopId], references: [id])
   supplier  Supplier @relation(fields: [supplierId], references: [id])
   purchase  Purchase? @relation(fields: [purchaseId], references: [id])
   createdBy User?    @relation(fields: [createdById], references: [id])
+
+  @@index([shopId])
 }
 
 model DailyClosing {
   id          String             @id @default(cuid())
-  closingDate DateTime           @unique @db.Date
+  shopId      String
+  closingDate DateTime           @db.Date
   openingCash Decimal            @db.Decimal(12, 2)
   cashInflows Decimal            @default(0) @db.Decimal(12, 2)
   cashOutflows Decimal           @default(0) @db.Decimal(12, 2)
@@ -566,12 +678,17 @@ model DailyClosing {
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
+  shop     Shop  @relation(fields: [shopId], references: [id])
   closedBy User? @relation(fields: [closedById], references: [id])
+
+  @@unique([closingDate, shopId])
+  @@index([shopId])
 }
 
 model DailySale {
   id               String   @id @default(cuid())
-  businessDate     DateTime @unique @db.Date
+  shopId           String
+  businessDate     DateTime @db.Date
   cashSales        Decimal  @db.Decimal(12, 2)
   upiSales         Decimal  @db.Decimal(12, 2)
   otherSales       Decimal  @default(0) @db.Decimal(12, 2)
@@ -589,11 +706,16 @@ model DailySale {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  shop      Shop  @relation(fields: [shopId], references: [id])
   createdBy User? @relation(fields: [createdById], references: [id])
+
+  @@unique([businessDate, shopId])
+  @@index([shopId])
 }
 
 model AuditLog {
   id         String   @id @default(cuid())
+  shopId     String?
   userId     String?
   action     String
   entityType String?
@@ -602,11 +724,15 @@ model AuditLog {
   newValue   Json?
   createdAt  DateTime @default(now())
 
+  shop Shop? @relation(fields: [shopId], references: [id])
   user User? @relation(fields: [userId], references: [id])
+
+  @@index([shopId])
 }
 
 model BankAccount {
   id             String   @id @default(cuid())
+  shopId         String
   name           String
   accountNumber  String?
   ifscCode       String?
@@ -617,7 +743,10 @@ model BankAccount {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
+  shop         Shop              @relation(fields: [shopId], references: [id])
   transactions BankTransaction[]
+
+  @@index([shopId])
 }
 
 model BankTransaction {
@@ -638,6 +767,7 @@ model BankTransaction {
 
 model PurchaseOrder {
   id             String    @id @default(cuid())
+  shopId         String
   orderNumber    String?   @unique
   supplier       String
   supplierId     String?
@@ -652,9 +782,12 @@ model PurchaseOrder {
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @default(now()) @updatedAt
 
+  shop        Shop                @relation(fields: [shopId], references: [id])
   supplierRel Supplier?           @relation(fields: [supplierId], references: [id])
   createdBy   User?               @relation(fields: [createdById], references: [id])
   items       PurchaseOrderItem[]
+
+  @@index([shopId])
 }
 
 model PurchaseOrderItem {
@@ -679,6 +812,7 @@ model PurchaseOrderItem {
 
 model Notification {
   id        String          @id @default(cuid())
+  shopId    String?
   userId    String?
   title     String
   message   String
@@ -688,11 +822,15 @@ model Notification {
   entityId  String?
   createdAt DateTime        @default(now())
 
+  shop Shop? @relation(fields: [shopId], references: [id])
   user User? @relation(fields: [userId], references: [id])
+
+  @@index([shopId])
 }
 
 model SalesTarget {
   id               String   @id @default(cuid())
+  shopId           String
   userId           String?
   year             Int
   month            Int
@@ -704,8 +842,12 @@ model SalesTarget {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  shop        Shop                      @relation(fields: [shopId], references: [id])
   user        User?                     @relation(fields: [userId], references: [id])
   contributions SalesTargetContribution[]
+
+  @@unique([year, month, shopId])
+  @@index([shopId])
 }
 
 model SalesTargetContribution {
@@ -722,6 +864,7 @@ model SalesTargetContribution {
 
 model ReportSnapshot {
   id            String   @id @default(cuid())
+  shopId        String
   userId        String?
   year          Int
   month         Int
@@ -734,11 +877,15 @@ model ReportSnapshot {
   notes         String?
   createdAt     DateTime @default(now())
 
+  shop Shop  @relation(fields: [shopId], references: [id])
   user User? @relation(fields: [userId], references: [id])
+
+  @@index([shopId])
 }
 
 model TelegramEvent {
   id         String   @id @default(cuid())
+  shopId     String?
   userId     String?
   eventType  String
   entityType String?
@@ -748,14 +895,23 @@ model TelegramEvent {
   status     String   @default("PENDING")
   createdAt  DateTime @default(now())
 
+  shop Shop? @relation(fields: [shopId], references: [id])
   user User? @relation(fields: [userId], references: [id])
+
+  @@index([shopId])
 }
 
 model Setting {
   id        String   @id @default(cuid())
-  key       String   @unique
+  shopId    String
+  key       String
   value     String
   updatedAt DateTime @updatedAt
+
+  shop Shop @relation(fields: [shopId], references: [id])
+
+  @@unique([key, shopId])
+  @@index([shopId])
 }
 
 model BankAccountTransaction {

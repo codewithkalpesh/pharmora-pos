@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation, Link } from 'react-router-dom';
 import { useAuth } from './AuthContext.js';
 import './auth.css';
 
@@ -107,6 +107,13 @@ export function LoginPage() {
             {busy ? 'Signing in…' : 'Sign in to Terminal'}
           </button>
         </form>
+
+        <div className="signup-footer-links">
+          <span>New shop?</span>{' '}
+          <Link to="/signup" className="signup-login-link">
+            Create your account
+          </Link>
+        </div>
 
         <div className="login-footer-note">
           <span>Private business terminal. Authorized access only.</span>

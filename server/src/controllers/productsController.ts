@@ -43,24 +43,34 @@ export const listProducts = endpoint(async (req, res) => {
   const result = await products.listProductsPage({
     ...filters,
     active: filters.active === undefined ? undefined : filters.active === 'true',
+    shopId: req.user?.shopId,
   });
   return res.json({ success: true, data: result });
 });
 
 export const getProduct = endpoint(async (req, res) =>
-  res.json({ success: true, data: await products.getProduct(String(req.params.id)) }));
+  res.json({ success: true, data: await products.getProduct(String(req.params.id), undefined, req.user?.shopId) }));
 
 export const createProduct = endpoint(async (req, res) => {
   const input = parse(productSchema.required({ name: true }), req.body);
-  return res.status(201).json({ success: true, data: await products.createProduct(input, undefined, req.user?.id) });
+  return res.status(201).json({
+    success: true,
+    data: await products.createProduct(input, undefined, req.user?.id, req.user?.shopId),
+  });
 });
 
 export const updateProduct = endpoint(async (req, res) => {
   const input = parse(productSchema.partial(), req.body);
-  return res.json({ success: true, data: await products.updateProduct(String(req.params.id), input, undefined, req.user?.id) });
+  return res.json({
+    success: true,
+    data: await products.updateProduct(String(req.params.id), input, undefined, req.user?.id, req.user?.shopId),
+  });
 });
 
 export const setProductActive = endpoint(async (req, res) => {
   const input = parse(z.object({ active: z.boolean() }), req.body);
-  return res.json({ success: true, data: await products.setProductActive(String(req.params.id), input.active, undefined, req.user?.id) });
+  return res.json({
+    success: true,
+    data: await products.setProductActive(String(req.params.id), input.active, undefined, req.user?.id, req.user?.shopId),
+  });
 });

@@ -4,6 +4,7 @@ import { writeCashbookEntry } from './cashbookService.js';
 import { normalizeBusinessDate } from './cashbookLedgerService.js';
 
 export type DailySalesInput = {
+  shopId?: string;
   businessDate: string | Date;
   cashSales: number;
   upiSales: number;
@@ -34,12 +35,13 @@ export type DailySalesReconciliation = {
 
 const round = (val: number) => Math.round(val * 100) / 100;
 
-export const getPosSalesTotalsForDate = async (tx: Prisma.TransactionClient | PrismaClient, businessDate: Date) => {
+export const getPosSalesTotalsForDate = async (tx: Prisma.TransactionClient | PrismaClient, businessDate: Date, shopId = 'default-shop-pharmora') => {
   const startOfDay = new Date(Date.UTC(businessDate.getUTCFullYear(), businessDate.getUTCMonth(), businessDate.getUTCDate(), 0, 0, 0, 0));
   const endOfDay = new Date(Date.UTC(businessDate.getUTCFullYear(), businessDate.getUTCMonth(), businessDate.getUTCDate(), 23, 59, 59, 999));
 
   const sales = await tx.sale.findMany({
     where: {
+      shopId,
       saleDate: { gte: startOfDay, lte: endOfDay },
       status: 'COMPLETED',
     },
@@ -75,11 +77,9 @@ export const getPosSalesTotalsForDate = async (tx: Prisma.TransactionClient | Pr
     } else if (sale.paymentMethod === 'UPI') {
       posUpi += Number(sale.paidAmount);
     } else if (sale.paymentMethod === 'BOTH') {
-      // If paid amount was recorded
       posCash += Number(sale.paidAmount);
     }
 
-    // Credits
     if (sale.credits && sale.credits.length > 0) {
       for (const credit of sale.credits) {
         posCredit += Number(credit.amount);
@@ -100,15 +100,20 @@ export const getPosSalesTotalsForDate = async (tx: Prisma.TransactionClient | Pr
 export const getDailySalesReconciliation = async (
   dateInput: string | Date,
   client?: PrismaClient,
+  shopId = 'default-shop-pharmora',
 ): Promise<DailySalesReconciliation> => {
   const db = database(client);
   const normalizedDate = normalizeBusinessDate(dateInput);
   const dateStr = normalizedDate.toISOString().slice(0, 10);
 
   const [closing, dailySale, posTotals] = await Promise.all([
-    db.dailyClosing.findUnique({ where: { closingDate: normalizedDate } }),
-    db.dailySale.findUnique({ where: { businessDate: normalizedDate } }),
-    getPosSalesTotalsForDate(db, normalizedDate),
+    db.dailyClosing.findFirst
+      ? db.dailyClosing.findFirst({ where: { closingDate: normalizedDate, shopId } })
+      : db.dailyClosing.findUnique({ where: { closingDate: normalizedDate } as any }),
+    db.dailySale.findFirst
+      ? db.dailySale.findFirst({ where: { businessDate: normalizedDate, shopId } })
+      : db.dailySale.findUnique({ where: { businessDate: normalizedDate } as any }),
+    getPosSalesTotalsForDate(db, normalizedDate, shopId),
   ]);
 
   const isClosed = closing !== null;
@@ -151,7 +156,6 @@ export const getDailySalesReconciliation = async (
     };
   }
 
-  // No daily sales record yet
   return {
     businessDate: dateStr,
     posCashSales: posTotals.posCashSales,
@@ -176,7 +180,9 @@ export const createDailySales = async (
   input: DailySalesInput,
   key: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = input.shopId || shopId;
   const stableKey = idempotencyKey(key);
   nonNegativeAmount(input.cashSales, 'Cash sales');
   nonNegativeAmount(input.upiSales, 'UPI sales');
@@ -201,26 +207,22 @@ export const createDailySales = async (
 
   try {
     return await withTransaction(client, async (tx) => {
-      // Check closing status
-      const closing = await tx.dailyClosing.findUnique({
-        where: { closingDate: normalizedDate },
-      });
+      const closing = tx.dailyClosing.findFirst
+        ? await tx.dailyClosing.findFirst({ where: { closingDate: normalizedDate, shopId: targetShopId } })
+        : await tx.dailyClosing.findUnique({ where: { closingDate: normalizedDate } as any });
       if (closing) {
         throw ruleViolation('Daily sales cannot be recorded for a closed business day');
       }
 
-      // Check if already exists for date
-      const existingForDate = await tx.dailySale.findUnique({
-        where: { businessDate: normalizedDate },
-      });
+      const existingForDate = tx.dailySale.findFirst
+        ? await tx.dailySale.findFirst({ where: { businessDate: normalizedDate, shopId: targetShopId } })
+        : await tx.dailySale.findUnique({ where: { businessDate: normalizedDate } as any });
       if (existingForDate) {
         throw ruleViolation('Daily sales already exists for this business date. Use update instead.');
       }
 
-      // Query POS totals for date
-      const posTotals = await getPosSalesTotalsForDate(tx, normalizedDate);
+      const posTotals = await getPosSalesTotalsForDate(tx, normalizedDate, targetShopId);
 
-      // Validate daily totals cannot be less than POS totals
       if (round(input.cashSales) < posTotals.posCashSales) {
         throw ruleViolation(`Daily cash sales (₹${input.cashSales}) cannot be less than POS cash sales (₹${posTotals.posCashSales})`);
       }
@@ -236,6 +238,7 @@ export const createDailySales = async (
 
       const record = await tx.dailySale.create({
         data: {
+          shopId: targetShopId,
           businessDate: normalizedDate,
           cashSales: input.cashSales,
           upiSales: input.upiSales,
@@ -254,9 +257,9 @@ export const createDailySales = async (
         },
       });
 
-      // Write Cashbook entries ONLY for the non-POS portion to prevent double counting
       if (nonPosCash > 0) {
         await writeCashbookEntry(tx, {
+          shopId: targetShopId,
           entryType: 'SALE',
           direction: 'IN',
           amount: nonPosCash,
@@ -272,6 +275,7 @@ export const createDailySales = async (
 
       if (nonPosUpi > 0) {
         await writeCashbookEntry(tx, {
+          shopId: targetShopId,
           entryType: 'SALE',
           direction: 'IN',
           amount: nonPosUpi,
@@ -288,6 +292,7 @@ export const createDailySales = async (
       if (tx.auditLog?.create) {
         await tx.auditLog.create({
           data: {
+            shopId: targetShopId,
             userId: input.createdById,
             action: 'DAILY_SALES_CREATED',
             entityType: 'DailySale',
@@ -321,6 +326,7 @@ export const createDailySales = async (
 export const updateDailySales = async (
   id: string,
   input: {
+    shopId?: string;
     cashSales: number;
     upiSales: number;
     otherSales?: number;
@@ -329,24 +335,28 @@ export const updateDailySales = async (
   },
   key: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
+  const targetShopId = input.shopId || shopId;
   const stableKey = idempotencyKey(key);
   nonNegativeAmount(input.cashSales, 'Cash sales');
   nonNegativeAmount(input.upiSales, 'UPI sales');
   if (input.otherSales !== undefined) nonNegativeAmount(input.otherSales, 'Other sales');
 
   return await withTransaction(client, async (tx) => {
-    const existing = await tx.dailySale.findUnique({ where: { id } });
+    const existing = tx.dailySale.findFirst
+      ? await tx.dailySale.findFirst({ where: { id, shopId: targetShopId } })
+      : await tx.dailySale.findUnique({ where: { id } as any });
     if (!existing) throw missing('Daily sales record');
 
-    const closing = await tx.dailyClosing.findUnique({
-      where: { closingDate: existing.businessDate },
-    });
+    const closing = tx.dailyClosing.findFirst
+      ? await tx.dailyClosing.findFirst({ where: { closingDate: existing.businessDate, shopId: targetShopId } })
+      : await tx.dailyClosing.findUnique({ where: { closingDate: existing.businessDate } as any });
     if (closing) {
       throw ruleViolation('Daily sales cannot be modified for a closed business day');
     }
 
-    const posTotals = await getPosSalesTotalsForDate(tx, existing.businessDate);
+    const posTotals = await getPosSalesTotalsForDate(tx, existing.businessDate, targetShopId);
 
     if (round(input.cashSales) < posTotals.posCashSales) {
       throw ruleViolation(`Daily cash sales (₹${input.cashSales}) cannot be less than POS cash sales (₹${posTotals.posCashSales})`);
@@ -367,9 +377,9 @@ export const updateDailySales = async (
     const cashDiff = round(newNonPosCash - oldNonPosCash);
     const upiDiff = round(newNonPosUpi - oldNonPosUpi);
 
-    // Cashbook adjustment for differences only
     if (cashDiff > 0) {
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'SALE',
         direction: 'IN',
         amount: cashDiff,
@@ -383,6 +393,7 @@ export const updateDailySales = async (
       });
     } else if (cashDiff < 0) {
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'MONEY_OUT',
         direction: 'OUT',
         amount: Math.abs(cashDiff),
@@ -398,6 +409,7 @@ export const updateDailySales = async (
 
     if (upiDiff > 0) {
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'SALE',
         direction: 'IN',
         amount: upiDiff,
@@ -411,6 +423,7 @@ export const updateDailySales = async (
       });
     } else if (upiDiff < 0) {
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'MONEY_OUT',
         direction: 'OUT',
         amount: Math.abs(upiDiff),
@@ -445,6 +458,7 @@ export const updateDailySales = async (
     if (tx.auditLog?.create) {
       await tx.auditLog.create({
         data: {
+          shopId: targetShopId,
           userId: input.createdById,
           action: 'DAILY_SALES_UPDATED',
           entityType: 'DailySale',
@@ -471,19 +485,19 @@ export const updateDailySales = async (
   });
 };
 
-export const getDailySale = async (id: string, client?: PrismaClient) => {
-  const sale = await database(client).dailySale.findUnique({
-    where: { id },
-    include: { createdBy: true },
-  });
+export const getDailySale = async (id: string, client?: PrismaClient, shopId = 'default-shop-pharmora') => {
+  const db = database(client);
+  const sale = db.dailySale.findFirst
+    ? await db.dailySale.findFirst({ where: { id, shopId }, include: { createdBy: true } })
+    : await db.dailySale.findUnique({ where: { id } as any, include: { createdBy: true } });
   if (!sale) throw missing('Daily sales record');
   return sale;
 };
 
-export const getDailySaleForDate = async (dateInput: string | Date, client?: PrismaClient) => {
+export const getDailySaleForDate = async (dateInput: string | Date, client?: PrismaClient, shopId = 'default-shop-pharmora') => {
+  const db = database(client);
   const normalizedDate = normalizeBusinessDate(dateInput);
-  return database(client).dailySale.findUnique({
-    where: { businessDate: normalizedDate },
-    include: { createdBy: true },
-  });
+  return db.dailySale.findFirst
+    ? db.dailySale.findFirst({ where: { businessDate: normalizedDate, shopId }, include: { createdBy: true } })
+    : db.dailySale.findUnique({ where: { businessDate: normalizedDate } as any, include: { createdBy: true } });
 };

@@ -6,6 +6,8 @@ declare global {
         name: string;
         email: string;
         role: string;
+        shopId: string;
+        shopName?: string;
       };
     }
   }

@@ -11,12 +11,42 @@ export interface User {
   isActive: boolean;
 }
 
+export interface ShopInfo {
+  id: string;
+  name: string;
+  ownerName?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  pincode?: string | null;
+  gstin?: string | null;
+  drugLicenseNumber?: string | null;
+}
+
+export interface SignupData {
+  shopName: string;
+  ownerName: string;
+  email: string;
+  phone?: string;
+  password: string;
+  confirmPassword?: string;
+  address?: string;
+  city?: string;
+  state?: string;
+  pincode?: string;
+  gstin?: string;
+  drugLicenseNumber?: string;
+}
+
 interface AuthContextType {
   user: User | null;
   token: string;
   isAuthenticated: boolean;
   loading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  signup: (data: SignupData) => Promise<void>;
   logout: () => void;
   refreshUser: () => Promise<void>;
 }
@@ -129,6 +159,29 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(receivedUser);
   }
 
+  async function signup(signupData: SignupData) {
+    const res = await fetch(`${apiBase}/api/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(signupData),
+    });
+
+    const payload = await res.json();
+
+    if (!res.ok || !payload.success) {
+      throw new Error(payload.message || 'Signup failed. Please check your details.');
+    }
+
+    const receivedToken = payload.token;
+    const receivedUser = payload.user;
+
+    localStorage.setItem(TOKEN_KEY, receivedToken);
+    localStorage.setItem(USER_KEY, JSON.stringify(receivedUser));
+
+    setToken(receivedToken);
+    setUser(receivedUser);
+  }
+
   function logout() {
     // Optionally fire logout to server (ignore result)
     if (token) {
@@ -171,6 +224,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         isAuthenticated,
         loading,
         login,
+        signup,
         logout,
         refreshUser,
       }}

@@ -3,6 +3,7 @@ import { database, invalid, missing, nonNegativeQuantity, positiveQuantity, with
 import { nonNegativeMoney, type MoneyInput } from './cashbookMath.js';
 
 type BatchInput = {
+  shopId?: string;
   productId: string;
   batchNumber: string;
   purchaseRate: MoneyInput;
@@ -28,16 +29,18 @@ const validateBatch = (input: BatchInput) => {
   if (input.expiryDate && Number.isNaN(input.expiryDate.getTime())) throw invalid('Expiry date is invalid');
 };
 
-export const createBatch = async (input: BatchInput, client?: DbClient, actorId?: string) => {
+export const createBatch = async (input: BatchInput, client?: DbClient, actorId?: string, shopId?: string) => {
   validateBatch(input);
+  const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
   if ((input.quantity ?? 0) > 0) throw invalid('Initial stock must be recorded through the stock service');
   return withTransaction(client, async (tx) => {
-    const product = await tx.product.findUnique({ where: { id: input.productId }, select: { id: true, active: true } });
+    const product = await tx.product.findFirst({ where: { id: input.productId, shopId: targetShopId }, select: { id: true, active: true } });
     if (!product) throw missing('Product');
     if (!product.active) throw invalid('Cannot add a batch to an inactive product');
-    if (input.supplierId && !(await tx.supplier.findUnique({ where: { id: input.supplierId }, select: { id: true } }))) throw missing('Supplier');
+    if (input.supplierId && !(await tx.supplier.findFirst({ where: { id: input.supplierId, shopId: targetShopId }, select: { id: true } }))) throw missing('Supplier');
     const batch = await tx.productBatch.create({
       data: {
+        shopId: targetShopId,
         productId: input.productId,
         batchNumber: input.batchNumber.trim(),
         purchaseRate: nonNegativeMoney(input.purchaseRate),
@@ -53,6 +56,7 @@ export const createBatch = async (input: BatchInput, client?: DbClient, actorId?
     });
     await tx.auditLog.create({
       data: {
+        shopId: targetShopId,
         userId: actorId ?? input.createdById,
         action: 'PRODUCT_BATCH_CREATED',
         entityType: 'ProductBatch',
@@ -76,9 +80,10 @@ export const updateBatch = async (
   input: Partial<Pick<BatchInput, 'expiryDate' | 'mrp' | 'sellingPrice' | 'gst'>>,
   client?: DbClient,
   actorId?: string,
+  shopId?: string,
 ) => {
   const db = database(client);
-  const batch = await db.productBatch.findUnique({ where: { id } });
+  const batch = await db.productBatch.findFirst({ where: { id, ...(shopId ? { shopId } : {}) } });
   if (!batch) throw missing('Batch');
   for (const [field, amount] of [['MRP', input.mrp], ['Selling price', input.sellingPrice], ['GST', input.gst]] as const) {
     if (amount !== undefined) nonNegativeMoney(amount, field);
@@ -91,13 +96,14 @@ export const updateBatch = async (
     gst: input.gst === undefined ? undefined : nonNegativeMoney(input.gst),
   };
   return withTransaction(client, async (tx) => {
-    const updated = await tx.productBatch.update({ where: { id }, data });
+    const updated = await tx.productBatch.update({ where: { id: batch.id }, data });
     await tx.auditLog.create({
       data: {
+        shopId: batch.shopId,
         userId: actorId,
         action: 'PRODUCT_BATCH_UPDATED',
         entityType: 'ProductBatch',
-        entityId: id,
+        entityId: batch.id,
         oldValue: { expiryDate: batch.expiryDate?.toISOString() ?? null, mrp: batch.mrp?.toFixed(2) ?? null, sellingPrice: batch.sellingPrice?.toFixed(2) ?? null, gst: batch.gst?.toFixed(2) ?? null },
         newValue: { expiryDate: updated.expiryDate?.toISOString() ?? null, mrp: updated.mrp?.toFixed(2) ?? null, sellingPrice: updated.sellingPrice?.toFixed(2) ?? null, gst: updated.gst?.toFixed(2) ?? null },
       },
@@ -106,35 +112,42 @@ export const updateBatch = async (
   });
 };
 
-export const listBatches = async (productId: string, client?: DbClient) => {
+export const listBatches = async (productId: string, client?: DbClient, shopId?: string) => {
   const db = database(client);
-  if (!(await db.product.findUnique({ where: { id: productId }, select: { id: true } }))) throw missing('Product');
-  return db.productBatch.findMany({ where: { productId }, orderBy: [{ expiryDate: 'asc' }, { batchNumber: 'asc' }] });
+  const targetShopId = shopId || 'default-shop-pharmora';
+  if (!(await db.product.findFirst({ where: { id: productId, shopId: targetShopId }, select: { id: true } }))) throw missing('Product');
+  return db.productBatch.findMany({ where: { productId, shopId: targetShopId }, orderBy: [{ expiryDate: 'asc' }, { batchNumber: 'asc' }] });
 };
 
-export const listAvailableBatches = (productId: string, at = new Date(), client?: DbClient) =>
-  database(client).productBatch.findMany({
-    where: { productId, quantity: { gt: 0 }, OR: [{ expiryDate: null }, { expiryDate: { gte: at } }] },
+export const listAvailableBatches = (productId: string, at = new Date(), client?: DbClient, shopId?: string) => {
+  const targetShopId = shopId || 'default-shop-pharmora';
+  return database(client).productBatch.findMany({
+    where: { productId, shopId: targetShopId, quantity: { gt: 0 }, OR: [{ expiryDate: null }, { expiryDate: { gte: at } }] },
     orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
   });
+};
 
-export const listExpiredBatches = (at = new Date(), client?: DbClient) =>
-  database(client).productBatch.findMany({ where: { expiryDate: { lt: at }, quantity: { gt: 0 } }, include: { product: true } });
+export const listExpiredBatches = (at = new Date(), client?: DbClient, shopId?: string) => {
+  const targetShopId = shopId || 'default-shop-pharmora';
+  return database(client).productBatch.findMany({ where: { shopId: targetShopId, expiryDate: { lt: at }, quantity: { gt: 0 } }, include: { product: true } });
+};
 
-export const listNearExpiryBatches = (days = 30, at = new Date(), client?: DbClient) => {
+export const listNearExpiryBatches = (days = 30, at = new Date(), client?: DbClient, shopId?: string) => {
   positiveQuantity(days, 'Days');
   const until = new Date(at);
   until.setDate(until.getDate() + days);
+  const targetShopId = shopId || 'default-shop-pharmora';
   return database(client).productBatch.findMany({
-    where: { expiryDate: { gte: at, lte: until }, quantity: { gt: 0 } },
+    where: { shopId: targetShopId, expiryDate: { gte: at, lte: until }, quantity: { gt: 0 } },
     include: { product: true, supplier: true },
     orderBy: { expiryDate: 'asc' },
   });
 };
 
-export const getExpiryDashboard = async (at = new Date(), client?: DbClient) => {
+export const getExpiryDashboard = async (at = new Date(), client?: DbClient, shopId?: string) => {
   const db = database(client);
   const now = new Date(at);
+  const targetShopId = shopId || 'default-shop-pharmora';
 
   const day30 = new Date(now);
   day30.setDate(day30.getDate() + 30);
@@ -147,6 +160,7 @@ export const getExpiryDashboard = async (at = new Date(), client?: DbClient) => 
 
   const allActiveBatches = await db.productBatch.findMany({
     where: {
+      shopId: targetShopId,
       quantity: { gt: 0 },
       expiryDate: { not: null },
     },
@@ -251,4 +265,3 @@ export const getExpiryDashboard = async (at = new Date(), client?: DbClient) => 
     referenceDate: now.toISOString(),
   };
 };
-

@@ -4,6 +4,7 @@ import './cashbook.css'
 import './auth.css'
 import { AuthProvider, useAuth } from './AuthContext.js'
 import { LoginPage } from './LoginPage.js'
+import { SignupPage } from './SignupPage.js'
 import { ProtectedRoute } from './ProtectedRoute.js'
 import { UserManagementPage } from './UserManagementPage.js'
 import { ChangePasswordModal } from './ChangePasswordModal.js'
@@ -1091,8 +1092,9 @@ function App() {
     <BrowserRouter>
       <AuthProvider>
         <Routes>
-          {/* Public Login Route */}
+          {/* Public Login & Signup Routes */}
           <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
 
           {/* All other routes protected */}
           <Route

@@ -19,21 +19,31 @@ export const listCategories = endpoint(async (req, res) => {
   const result = await categories.listCategories({
     search: query.search,
     active: query.active === undefined ? undefined : query.active === 'true',
+    shopId: req.user?.shopId,
   });
   return res.json({ success: true, data: result });
 });
 
 export const createCategory = endpoint(async (req, res) => {
   const input = parse(nameSchema, req.body);
-  return res.status(201).json({ success: true, data: await categories.createCategory(input, undefined, req.user?.id) });
+  return res.status(201).json({
+    success: true,
+    data: await categories.createCategory(input, undefined, req.user?.id, req.user?.shopId),
+  });
 });
 
 export const updateCategory = endpoint(async (req, res) => {
   const input = parse(nameSchema, req.body);
-  return res.json({ success: true, data: await categories.updateCategory(String(req.params.id), input, undefined, req.user?.id) });
+  return res.json({
+    success: true,
+    data: await categories.updateCategory(String(req.params.id), input, undefined, req.user?.id, req.user?.shopId),
+  });
 });
 
 export const setCategoryActive = endpoint(async (req, res) => {
   const input = parse(z.object({ active: z.boolean() }), req.body);
-  return res.json({ success: true, data: await categories.setCategoryActive(String(req.params.id), input.active, undefined, req.user?.id) });
+  return res.json({
+    success: true,
+    data: await categories.setCategoryActive(String(req.params.id), input.active, undefined, req.user?.id, req.user?.shopId),
+  });
 });

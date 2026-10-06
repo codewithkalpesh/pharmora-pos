@@ -2,6 +2,7 @@ import { Prisma } from '@prisma/client';
 import { database, invalid, missing, nonNegativeAmount, type DbClient } from './domainUtils.js';
 
 type SupplierInput = {
+  shopId?: string;
   name: string;
   phone?: string;
   gstin?: string;
@@ -17,6 +18,7 @@ const validate = (input: Partial<SupplierInput>) => {
 
 const supplierSnapshot = (supplier: any) => ({
   id: supplier.id,
+  shopId: supplier.shopId,
   name: supplier.name,
   phone: supplier.phone ?? null,
   gstin: supplier.gstin ?? null,
@@ -36,6 +38,7 @@ const auditSupplier = async (
   if ('auditLog' in db && typeof (db as any).auditLog?.create === 'function') {
     await (db as any).auditLog.create({
       data: {
+        shopId: supplier.shopId,
         userId: actorId,
         action,
         entityType: 'Supplier',
@@ -47,37 +50,50 @@ const auditSupplier = async (
   }
 };
 
-export const createSupplier = async (input: SupplierInput, client?: DbClient, actorId?: string) => {
+export const createSupplier = async (input: SupplierInput, client?: DbClient, actorId?: string, shopId?: string) => {
   validate(input);
   const db = database(client);
-  const supplier = await db.supplier.create({ data: { ...input, name: input.name.trim() } });
+  const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
+  const supplier = await db.supplier.create({
+    data: {
+      ...input,
+      name: input.name.trim(),
+      shopId: targetShopId,
+    },
+  });
   await auditSupplier(db, 'SUPPLIER_CREATED', supplier, actorId);
   return supplier;
 };
 
-export const updateSupplier = async (id: string, input: Partial<SupplierInput>, client?: DbClient, actorId?: string) => {
+export const updateSupplier = async (id: string, input: Partial<SupplierInput>, client?: DbClient, actorId?: string, shopId?: string) => {
   validate(input);
   const db = database(client);
-  const existing = await db.supplier.findUnique({ where: { id } });
+  const existing = db.supplier.findFirst
+    ? await db.supplier.findFirst({ where: { id, ...(shopId ? { shopId } : {}) } })
+    : await db.supplier.findUnique({ where: { id } });
   if (!existing) throw missing('Supplier');
-  const updated = await db.supplier.update({ where: { id }, data: input });
+  const updated = await db.supplier.update({ where: { id: existing.id }, data: input });
   await auditSupplier(db, 'SUPPLIER_UPDATED', updated, actorId, existing);
   return updated;
 };
 
-export const listSuppliers = async (search?: string, client?: DbClient) => {
+export const listSuppliers = async (search?: string, client?: DbClient, shopId?: string) => {
   const query = search?.trim();
   const db = database(client);
+  const targetShopId = shopId || 'default-shop-pharmora';
   const suppliers = await db.supplier.findMany({
-    where: query
-      ? {
-          OR: [
-            { name: { contains: query, mode: 'insensitive' } },
-            { phone: { contains: query, mode: 'insensitive' } },
-            { gstin: { contains: query, mode: 'insensitive' } },
-          ],
-        }
-      : undefined,
+    where: {
+      shopId: targetShopId,
+      ...(query
+        ? {
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { phone: { contains: query, mode: 'insensitive' } },
+              { gstin: { contains: query, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+    },
     include: {
       purchases: { select: { id: true, totalAmount: true, paidAmount: true, outstandingAmount: true } },
       supplierPayments: { select: { id: true, amount: true } },
@@ -95,19 +111,30 @@ export const listSuppliers = async (search?: string, client?: DbClient) => {
   });
 };
 
-export const getSupplier = async (id: string, client?: DbClient) => {
+export const getSupplier = async (id: string, client?: DbClient, shopId?: string) => {
   const db = database(client);
-  const supplier = await db.supplier.findUnique({
-    where: { id },
-    include: {
-      purchases: {
-        include: { items: { include: { product: true, batch: true } }, supplierPayments: true },
-        orderBy: { invoiceDate: 'desc' },
-      },
-      supplierPayments: { orderBy: { paymentDate: 'desc' } },
-    },
-  });
-  if (!supplier) throw missing('Supplier');
+  const supplier = db.supplier.findFirst
+    ? await db.supplier.findFirst({
+        where: { id, ...(shopId ? { shopId } : {}) },
+        include: {
+          purchases: {
+            include: { items: { include: { product: true, batch: true } }, supplierPayments: true },
+            orderBy: { invoiceDate: 'desc' },
+          },
+          supplierPayments: { orderBy: { paymentDate: 'desc' } },
+        },
+      })
+    : await db.supplier.findUnique({
+        where: { id },
+        include: {
+          purchases: {
+            include: { items: { include: { product: true, batch: true } }, supplierPayments: true },
+            orderBy: { invoiceDate: 'desc' },
+          },
+          supplierPayments: { orderBy: { paymentDate: 'desc' } },
+        },
+      });
+  if (!supplier || (shopId && (supplier as any).shopId && (supplier as any).shopId !== shopId)) throw missing('Supplier');
 
   const calculatedOutstanding = supplier.purchases.reduce((total, purchase) => {
     return total + Math.max(0, Number(purchase.outstandingAmount ?? (Number(purchase.totalAmount) - Number(purchase.paidAmount))));

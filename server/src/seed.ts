@@ -2,6 +2,26 @@ import bcrypt from 'bcryptjs';
 import prisma from './lib/prisma.js';
 
 async function seed() {
+  const defaultShopId = 'default-shop-pharmora';
+
+  await prisma.shop.upsert({
+    where: { id: defaultShopId },
+    update: {},
+    create: {
+      id: defaultShopId,
+      name: 'SHREE RAJLAXMI MEDICAL AND GENERAL STORES',
+      ownerName: 'Pharmora Owner',
+      email: 'owner@pharmora.local',
+      phone: '+91 90000 00000',
+      address: 'Medical Square, Main Road',
+      city: 'Pune',
+      state: 'Maharashtra',
+      pincode: '411001',
+      gstin: '27AAAAA0000A1Z5',
+      drugLicenseNumber: 'MH-MZ2-123456',
+    },
+  });
+
   const roleNames = ['OWNER', 'MANAGER', 'CASHIER', 'PHARMACIST', 'STAFF'] as const;
 
   for (const roleName of roleNames) {
@@ -27,6 +47,7 @@ async function seed() {
       name: 'Pharmora Owner',
       isActive: true,
       roleId: ownerRole.id,
+      shopId: defaultShopId,
     },
     create: {
       email: 'owner@pharmora.local',
@@ -34,6 +55,7 @@ async function seed() {
       password: ownerPassword,
       phone: '+91 90000 00000',
       roleId: ownerRole.id,
+      shopId: defaultShopId,
     },
   });
 
@@ -41,15 +63,15 @@ async function seed() {
 
   for (const name of categoryNames) {
     await prisma.category.upsert({
-      where: { name },
+      where: { name_shopId: { name, shopId: defaultShopId } },
       update: {},
-      create: { name },
+      create: { name, shopId: defaultShopId },
     });
   }
 
-  const painRelief = await prisma.category.findUnique({ where: { name: 'Pain Relief' } });
-  const vitamins = await prisma.category.findUnique({ where: { name: 'Vitamins' } });
-  const generalMedicine = await prisma.category.findUnique({ where: { name: 'General Medicine' } });
+  const painRelief = await prisma.category.findUnique({ where: { name_shopId: { name: 'Pain Relief', shopId: defaultShopId } } });
+  const vitamins = await prisma.category.findUnique({ where: { name_shopId: { name: 'Vitamins', shopId: defaultShopId } } });
+  const generalMedicine = await prisma.category.findUnique({ where: { name_shopId: { name: 'General Medicine', shopId: defaultShopId } } });
 
   const productData = [
     {
@@ -66,6 +88,7 @@ async function seed() {
       minStock: 20,
       reorderLevel: 15,
       categoryId: painRelief?.id,
+      shopId: defaultShopId,
     },
     {
       name: 'Vitamin C Plus',
@@ -81,6 +104,7 @@ async function seed() {
       minStock: 12,
       reorderLevel: 8,
       categoryId: vitamins?.id,
+      shopId: defaultShopId,
     },
     {
       name: 'Cough Syrup',
@@ -96,12 +120,13 @@ async function seed() {
       minStock: 18,
       reorderLevel: 10,
       categoryId: generalMedicine?.id,
+      shopId: defaultShopId,
     },
   ];
 
   for (const product of productData) {
     await prisma.product.upsert({
-      where: { sku: product.sku },
+      where: { sku_shopId: { sku: product.sku, shopId: defaultShopId } },
       update: {
         ...product,
       },

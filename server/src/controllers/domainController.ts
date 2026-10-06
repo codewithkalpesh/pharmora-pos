@@ -35,6 +35,7 @@ const parse = <T>(schema: z.ZodType<T>, value: unknown): T => {
 };
 const requiredKey = (req: Request) => req.get('Idempotency-Key') ?? '';
 const actorId = (req: Request) => req.user?.id;
+const shopId = (req: Request) => req.user?.shopId ?? 'default-shop-pharmora';
 const paymentMethod = z.enum(['CASH', 'UPI', 'BANK', 'BOTH', 'CREDIT']);
 const settledMethod = z.enum(['CASH', 'UPI', 'BANK', 'BOTH']);
 const positiveInt = z.coerce.number().int().positive();
@@ -56,17 +57,17 @@ const batchSchema = z.object({
   supplierId: z.string().optional(),
 });
 
-export const listBatches = endpoint(async (req, res) => res.json({ success: true, data: await batches.listBatches(String(req.params.productId)) }));
-export const listExpiredBatches = endpoint(async (_req, res) => res.json({ success: true, data: await batches.listExpiredBatches() }));
+export const listBatches = endpoint(async (req, res) => res.json({ success: true, data: await batches.listBatches(String(req.params.productId), undefined, shopId(req)) }));
+export const listExpiredBatches = endpoint(async (req, res) => res.json({ success: true, data: await batches.listExpiredBatches(undefined, undefined, shopId(req)) }));
 export const listNearExpiryBatches = endpoint(async (req, res) => {
   const days = parse(z.coerce.number().int().positive().default(30), req.query.days);
-  return res.json({ success: true, data: await batches.listNearExpiryBatches(days) });
+  return res.json({ success: true, data: await batches.listNearExpiryBatches(days, undefined, undefined, shopId(req)) });
 });
-export const getExpiryDashboard = endpoint(async (_req, res) => res.json({ success: true, data: await batches.getExpiryDashboard() }));
-export const createBatch = endpoint(async (req, res) => res.status(201).json({ success: true, data: await batches.createBatch({ ...parse(batchSchema, req.body), createdById: actorId(req) }, undefined, actorId(req)) }));
+export const getExpiryDashboard = endpoint(async (req, res) => res.json({ success: true, data: await batches.getExpiryDashboard(undefined, undefined, shopId(req)) }));
+export const createBatch = endpoint(async (req, res) => res.status(201).json({ success: true, data: await batches.createBatch({ ...parse(batchSchema, req.body), shopId: shopId(req), createdById: actorId(req) }, undefined, actorId(req), shopId(req)) }));
 export const updateBatch = endpoint(async (req, res) => {
   const input = parse(batchSchema.pick({ expiryDate: true, mrp: true, sellingPrice: true, gst: true }).partial(), req.body);
-  return res.json({ success: true, data: await batches.updateBatch(String(req.params.id), input, undefined, actorId(req)) });
+  return res.json({ success: true, data: await batches.updateBatch(String(req.params.id), input, undefined, actorId(req), shopId(req)) });
 });
 
 const inventoryFiltersSchema = z.object({
@@ -79,19 +80,19 @@ const inventoryFiltersSchema = z.object({
 });
 const inventoryFilters = (req: Request) => {
   const parsed = parse(inventoryFiltersSchema, req.query);
-  return { ...parsed, active: parsed.active === undefined ? undefined : parsed.active === 'true' };
+  return { ...parsed, shopId: shopId(req), active: parsed.active === undefined ? undefined : parsed.active === 'true' };
 };
-export const listInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getInventoryList(inventoryFilters(req)) }));
-export const listLowStockInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getLowStockProducts(inventoryFilters(req)) }));
-export const listOutOfStockInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getOutOfStockProducts(inventoryFilters(req)) }));
+export const listInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getInventoryList(inventoryFilters(req), undefined, shopId(req)) }));
+export const listLowStockInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getLowStockProducts(inventoryFilters(req), undefined, shopId(req)) }));
+export const listOutOfStockInventory = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getOutOfStockProducts(inventoryFilters(req), undefined, shopId(req)) }));
 export const listExpiryInventory = endpoint(async (req, res) => {
   const bucket = parse(z.enum(['EXPIRED', 'DAYS_0_30', 'DAYS_31_60', 'DAYS_61_90', 'DAYS_91_180', 'SAFE']), req.query.bucket);
-  return res.json({ success: true, data: await inventory.getExpiryInventory(bucket, inventoryFilters(req)) });
+  return res.json({ success: true, data: await inventory.getExpiryInventory(bucket, inventoryFilters(req), undefined, shopId(req)) });
 });
-export const getProductStockSummary = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getProductStockSummary(String(req.params.id)) }));
+export const getProductStockSummary = endpoint(async (req, res) => res.json({ success: true, data: await inventory.getProductStockSummary(String(req.params.id), undefined, undefined, shopId(req)) }));
 export const getFefoAvailability = endpoint(async (req, res) => {
   const query = parse(z.object({ quantity: z.coerce.number().int().positive().optional(), businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }), req.query);
-  return res.json({ success: true, data: await inventory.getFefoBatchAvailability(String(req.params.id), query.quantity, query.businessDate) });
+  return res.json({ success: true, data: await inventory.getFefoBatchAvailability(String(req.params.id), query.quantity, query.businessDate, undefined, shopId(req)) });
 });
 export const adjustInventoryStock = endpoint(async (req, res) => {
   const input = parse(z.object({
@@ -103,7 +104,7 @@ export const adjustInventoryStock = endpoint(async (req, res) => {
   }), req.body);
   return res.status(201).json({
     success: true,
-    data: await inventory.adjustInventoryStock({ ...input, actorId: actorId(req) ?? '', idempotencyKey: requiredKey(req) }),
+    data: await inventory.adjustInventoryStock({ ...input, shopId: shopId(req), actorId: actorId(req) ?? '', idempotencyKey: requiredKey(req) }, undefined, shopId(req)),
   });
 });
 
@@ -117,36 +118,46 @@ const stockMovementSchema = z.object({
 export const adjustStock = endpoint(async (req, res) => {
   const input = parse(stockMovementSchema, req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await stock.adjustStock({ ...input, referenceType: 'MANUAL_ADJUSTMENT', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
+  return res.status(201).json({ success: true, data: await stock.adjustStock({ ...input, shopId: shopId(req), referenceType: 'MANUAL_ADJUSTMENT', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
 });
 export const recordDamage = endpoint(async (req, res) => {
   const input = parse(stockMovementSchema.omit({ movementType: true }), req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await stock.recordDamage({ ...input, referenceType: 'DAMAGE', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
+  return res.status(201).json({ success: true, data: await stock.recordDamage({ ...input, shopId: shopId(req), referenceType: 'DAMAGE', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
 });
 export const recordExpiry = endpoint(async (req, res) => {
   const input = parse(stockMovementSchema.omit({ movementType: true }), req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await stock.recordExpiry({ ...input, referenceType: 'EXPIRY', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
+  return res.status(201).json({ success: true, data: await stock.recordExpiry({ ...input, shopId: shopId(req), referenceType: 'EXPIRY', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
 });
 export const recordReturn = endpoint(async (req, res) => {
   const input = parse(stockMovementSchema.omit({ movementType: true }).extend({ direction: z.enum(['IN', 'OUT']) }), req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await stock.returnStock({ ...input, referenceType: 'RETURN', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
+  return res.status(201).json({ success: true, data: await stock.returnStock({ ...input, shopId: shopId(req), referenceType: 'RETURN', referenceId: key, idempotencyKey: key, createdById: actorId(req) }) });
 });
 export const listStockMovements = endpoint(async (req, res) => {
   const productId = typeof req.query.productId === 'string' ? req.query.productId : undefined;
-  return res.json({ success: true, data: await prisma.stockMovement.findMany({ where: { productId }, include: { product: true, batch: true }, orderBy: { createdAt: 'desc' } }) });
+  return res.json({
+    success: true,
+    data: await prisma.stockMovement.findMany({
+      where: {
+        product: { shopId: shopId(req) },
+        ...(productId ? { productId } : {}),
+      },
+      include: { product: true, batch: true },
+      orderBy: { createdAt: 'desc' },
+    }),
+  });
 });
 
 const supplierSchema = z.object({
   name: z.string().trim().min(1), phone: z.string().optional(), gstin: z.string().optional(),
   address: z.string().optional(), paymentTerms: z.string().optional(), creditLimit: nonNegative.optional(),
 });
-export const listSuppliers = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.listSuppliers(typeof req.query.search === 'string' ? req.query.search : undefined) }));
-export const createSupplier = endpoint(async (req, res) => res.status(201).json({ success: true, data: await suppliers.createSupplier(parse(supplierSchema, req.body)) }));
-export const updateSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.updateSupplier(String(req.params.id), parse(supplierSchema.partial(), req.body)) }));
-export const getSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.getSupplier(String(req.params.id)) }));
+export const listSuppliers = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.listSuppliers(typeof req.query.search === 'string' ? req.query.search : undefined, undefined, shopId(req)) }));
+export const createSupplier = endpoint(async (req, res) => res.status(201).json({ success: true, data: await suppliers.createSupplier(parse(supplierSchema, req.body), undefined, shopId(req)) }));
+export const updateSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.updateSupplier(String(req.params.id), parse(supplierSchema.partial(), req.body), undefined, shopId(req)) }));
+export const getSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.getSupplier(String(req.params.id), undefined, shopId(req)) }));
 
 const purchaseSchema = z.object({
   supplierId: z.string().min(1), invoiceNumber: z.string().trim().min(1), invoiceDate: z.coerce.date(),
@@ -159,15 +170,15 @@ const purchaseSchema = z.object({
     discount: nonNegative.optional(), expiryDate: z.coerce.date().optional(),
   })).min(1),
 });
-export const listPurchases = endpoint(async (req, res) => res.json({ success: true, data: await purchases.listPurchases(typeof req.query.supplierId === 'string' ? req.query.supplierId : undefined) }));
-export const createPurchase = endpoint(async (req, res) => res.status(201).json({ success: true, data: await purchases.createPurchase({ ...parse(purchaseSchema, req.body), createdById: actorId(req) }, requiredKey(req)) }));
-export const getPurchase = endpoint(async (req, res) => res.json({ success: true, data: await purchases.getPurchase(String(req.params.id)) }));
+export const listPurchases = endpoint(async (req, res) => res.json({ success: true, data: await purchases.listPurchases(typeof req.query.supplierId === 'string' ? req.query.supplierId : undefined, undefined, shopId(req)) }));
+export const createPurchase = endpoint(async (req, res) => res.status(201).json({ success: true, data: await purchases.createPurchase({ ...parse(purchaseSchema, req.body), shopId: shopId(req), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) }));
+export const getPurchase = endpoint(async (req, res) => res.json({ success: true, data: await purchases.getPurchase(String(req.params.id), undefined, shopId(req)) }));
 
 const customerSchema = z.object({ name: z.string().trim().min(1), phone: z.string().optional(), address: z.string().optional(), notes: z.string().optional() });
-export const listCustomers = endpoint(async (req, res) => res.json({ success: true, data: await customers.listCustomers(typeof req.query.search === 'string' ? req.query.search : undefined) }));
-export const createCustomer = endpoint(async (req, res) => res.status(201).json({ success: true, data: await customers.createCustomer(parse(customerSchema, req.body)) }));
-export const updateCustomer = endpoint(async (req, res) => res.json({ success: true, data: await customers.updateCustomer(String(req.params.id), parse(customerSchema.partial(), req.body)) }));
-export const getCustomer = endpoint(async (req, res) => res.json({ success: true, data: await customers.getCustomer(String(req.params.id)) }));
+export const listCustomers = endpoint(async (req, res) => res.json({ success: true, data: await customers.listCustomers(typeof req.query.search === 'string' ? req.query.search : undefined, undefined, shopId(req)) }));
+export const createCustomer = endpoint(async (req, res) => res.status(201).json({ success: true, data: await customers.createCustomer(parse(customerSchema, req.body), undefined, shopId(req)) }));
+export const updateCustomer = endpoint(async (req, res) => res.json({ success: true, data: await customers.updateCustomer(String(req.params.id), parse(customerSchema.partial(), req.body), undefined, shopId(req)) }));
+export const getCustomer = endpoint(async (req, res) => res.json({ success: true, data: await customers.getCustomer(String(req.params.id), undefined, shopId(req)) }));
 
 const saleSchema = z.object({
   saleNumber: z.string().optional(), customerId: z.string().optional(), paymentMethod,
@@ -175,56 +186,56 @@ const saleSchema = z.object({
   cashAmount: nonNegative.optional(), upiAmount: nonNegative.optional(),
   items: z.array(z.object({ productId: z.string().min(1), batchId: z.string().optional(), quantity: positiveInt, sellingPrice: nonNegative.optional(), discount: nonNegative.optional(), gst: nonNegative.optional() })).min(1),
 });
-export const listSales = endpoint(async (_req, res) => res.json({ success: true, data: await sales.listSales() }));
-export const createSale = endpoint(async (req, res) => res.status(201).json({ success: true, data: await sales.createSale({ ...parse(saleSchema, req.body), createdById: actorId(req) }, requiredKey(req)) }));
-export const getSale = endpoint(async (req, res) => res.json({ success: true, data: await sales.getSale(String(req.params.id)) }));
+export const listSales = endpoint(async (req, res) => res.json({ success: true, data: await sales.listSales(undefined, shopId(req)) }));
+export const createSale = endpoint(async (req, res) => res.status(201).json({ success: true, data: await sales.createSale({ ...parse(saleSchema, req.body), shopId: shopId(req), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) }));
+export const getSale = endpoint(async (req, res) => res.json({ success: true, data: await sales.getSale(String(req.params.id), undefined, shopId(req)) }));
 
 const paymentSchema = z.object({ amount: z.coerce.number().positive(), paymentMethod: settledMethod, cashAmount: nonNegative.optional(), upiAmount: nonNegative.optional(), notes: z.string().optional() });
-export const listPayments = endpoint(async (_req, res) => res.json({ success: true, data: await payments.listPayments() }));
-export const getPayment = endpoint(async (req, res) => res.json({ success: true, data: await payments.getPayment(String(req.params.id)) }));
+export const listPayments = endpoint(async (req, res) => res.json({ success: true, data: await payments.listPayments(undefined, shopId(req)) }));
+export const getPayment = endpoint(async (req, res) => res.json({ success: true, data: await payments.getPayment(String(req.params.id), undefined, shopId(req)) }));
 export const recordSalePayment = endpoint(async (req, res) => {
   const input = parse(paymentSchema, req.body);
-  return res.status(201).json({ success: true, data: await payments.recordSalePayment({ ...input, paymentMethod: input.paymentMethod as PaymentMethod, saleId: String(req.params.saleId), createdById: actorId(req) }, requiredKey(req)) });
+  return res.status(201).json({ success: true, data: await payments.recordSalePayment({ ...input, shopId: shopId(req), paymentMethod: input.paymentMethod as PaymentMethod, saleId: String(req.params.saleId), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) });
 });
 export const recordCustomerPayment = endpoint(async (req, res) => {
   const input = parse(paymentSchema, req.body);
-  return res.status(201).json({ success: true, data: await payments.recordCustomerPayment({ ...input, paymentMethod: input.paymentMethod as PaymentMethod, customerId: String(req.params.customerId), createdById: actorId(req) }, requiredKey(req)) });
+  return res.status(201).json({ success: true, data: await payments.recordCustomerPayment({ ...input, shopId: shopId(req), paymentMethod: input.paymentMethod as PaymentMethod, customerId: String(req.params.customerId), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) });
 });
 export const recordSupplierPayment = endpoint(async (req, res) => {
   const input = parse(paymentSchema, req.body);
-  return res.status(201).json({ success: true, data: await payments.recordSupplierPayment({ ...input, paymentMethod: input.paymentMethod as PaymentMethod, supplierId: String(req.params.supplierId), purchaseId: String(req.params.purchaseId), createdById: actorId(req) }, requiredKey(req)) });
+  return res.status(201).json({ success: true, data: await payments.recordSupplierPayment({ ...input, shopId: shopId(req), paymentMethod: input.paymentMethod as PaymentMethod, supplierId: String(req.params.supplierId), purchaseId: String(req.params.purchaseId), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) });
 });
 
 export const listCashbookEntries = endpoint(async (req, res) => {
   const filterSchema = z.object({ date: z.string().optional(), from: z.string().optional(), to: z.string().optional(), paymentMethod: settledMethod.optional() });
   const input = parse(filterSchema, req.query);
-  return res.json({ success: true, data: await cashbook.listCashbookEntries(input) });
+  return res.json({ success: true, data: await cashbook.listCashbookEntries({ ...input, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 const todayBusinessDate = () => {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 };
 const cashbookDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional();
-export const getCashbookBalances = endpoint(async (_req, res) => res.json({ success: true, data: await cashbook.getCurrentCashPosition() }));
+export const getCashbookBalances = endpoint(async (req, res) => res.json({ success: true, data: await cashbook.getCurrentCashPosition(undefined, shopId(req)) }));
 export const getCashbookSummary = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await cashbook.getDailyCashSummary(date) });
+  return res.json({ success: true, data: await cashbook.getDailyCashSummary(date, undefined, shopId(req)) });
 });
 export const getOpeningCash = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await cashbook.getOpeningCash(date) });
+  return res.json({ success: true, data: await cashbook.getOpeningCash(date, undefined, shopId(req)) });
 });
 export const setOpeningCash = endpoint(async (req, res) => {
   const input = parse(z.object({ businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), amount: cashbookAmount, reason: z.string().trim().optional() }), req.body);
-  return res.json({ success: true, data: await cashbook.setOpeningCash({ ...input, createdById: actorId(req), idempotencyKey: requiredKey(req) }) });
+  return res.json({ success: true, data: await cashbook.setOpeningCash({ ...input, shopId: shopId(req), createdById: actorId(req), idempotencyKey: requiredKey(req) }, undefined, shopId(req)) });
 });
 export const getDailyClosing = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await cashbook.getDailyClosing(date) });
+  return res.json({ success: true, data: await cashbook.getDailyClosing(date, undefined, shopId(req)) });
 });
 export const createDailyClosing = endpoint(async (req, res) => {
   const input = parse(z.object({ businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), actualCash: cashbookAmount, notes: z.string().trim().max(500).optional() }), req.body);
-  return res.status(201).json({ success: true, data: await cashbook.createDailyClosing({ ...input, closedById: actorId(req) }) });
+  return res.status(201).json({ success: true, data: await cashbook.createDailyClosing({ ...input, shopId: shopId(req), closedById: actorId(req) }, undefined, shopId(req)) });
 });
 export const createCashbookAdjustment = endpoint(async (req, res) => {
   const input = parse(z.object({
@@ -234,12 +245,12 @@ export const createCashbookAdjustment = endpoint(async (req, res) => {
     description: z.string().trim().min(1).max(250),
   }), req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await cashbook.createAdjustment({ ...input, createdById: actorId(req), idempotencyKey: key }) });
+  return res.status(201).json({ success: true, data: await cashbook.createAdjustment({ ...input, shopId: shopId(req), createdById: actorId(req), idempotencyKey: key }, undefined, shopId(req)) });
 });
 export const transferCashAndBank = endpoint(async (req, res) => {
   const input = parse(z.object({ direction: z.enum(['CASH_TO_BANK', 'BANK_TO_CASH']), amount: cashbookAmount, businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(), description: z.string().optional() }), req.body);
   const key = requiredKey(req);
-  return res.status(201).json({ success: true, data: await cashbook.transferCashAndBank({ ...input, createdById: actorId(req), idempotencyKey: key }) });
+  return res.status(201).json({ success: true, data: await cashbook.transferCashAndBank({ ...input, shopId: shopId(req), createdById: actorId(req), idempotencyKey: key }, undefined, shopId(req)) });
 });
 
 const expenseSchema = z.object({
@@ -249,10 +260,10 @@ const expenseSchema = z.object({
 });
 export const listExpenses = endpoint(async (req, res) => {
   const filters = parse(z.object({ category: z.string().optional(), from: z.coerce.date().optional(), to: z.coerce.date().optional() }), req.query);
-  return res.json({ success: true, data: await expenses.listExpenses(filters) });
+  return res.json({ success: true, data: await expenses.listExpenses({ ...filters, shopId: shopId(req) }, undefined, shopId(req)) });
 });
-export const listExpenseCategories = endpoint(async (_req, res) => res.json({ success: true, data: await expenses.listExpenseCategories() }));
-export const createExpense = endpoint(async (req, res) => res.status(201).json({ success: true, data: await expenses.createExpense({ ...parse(expenseSchema, req.body), createdById: actorId(req) }, requiredKey(req)) }));
+export const listExpenseCategories = endpoint(async (req, res) => res.json({ success: true, data: await expenses.listExpenseCategories(undefined, shopId(req)) }));
+export const createExpense = endpoint(async (req, res) => res.status(201).json({ success: true, data: await expenses.createExpense({ ...parse(expenseSchema, req.body), shopId: shopId(req), createdById: actorId(req) }, requiredKey(req), undefined, shopId(req)) }));
 
 const dailySalesSchema = z.object({
   businessDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -264,16 +275,16 @@ const dailySalesSchema = z.object({
 
 export const getDailySalesReconciliation = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await dailySales.getDailySalesReconciliation(date) });
+  return res.json({ success: true, data: await dailySales.getDailySalesReconciliation(date, undefined, shopId(req)) });
 });
 
 export const getDailySale = endpoint(async (req, res) => {
-  return res.json({ success: true, data: await dailySales.getDailySale(String(req.params.id)) });
+  return res.json({ success: true, data: await dailySales.getDailySale(String(req.params.id), undefined, shopId(req)) });
 });
 
 export const getDailySaleForDate = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await dailySales.getDailySaleForDate(date) });
+  return res.json({ success: true, data: await dailySales.getDailySaleForDate(date, undefined, shopId(req)) });
 });
 
 export const createDailySales = endpoint(async (req, res) => {
@@ -281,7 +292,7 @@ export const createDailySales = endpoint(async (req, res) => {
   const key = requiredKey(req);
   return res.status(201).json({
     success: true,
-    data: await dailySales.createDailySales({ ...input, createdById: actorId(req) }, key),
+    data: await dailySales.createDailySales({ ...input, shopId: shopId(req), createdById: actorId(req) }, key, undefined, shopId(req)),
   });
 });
 
@@ -290,13 +301,13 @@ export const updateDailySales = endpoint(async (req, res) => {
   const key = requiredKey(req);
   return res.json({
     success: true,
-    data: await dailySales.updateDailySales(String(req.params.id), { ...input, createdById: actorId(req) }, key),
+    data: await dailySales.updateDailySales(String(req.params.id), { ...input, shopId: shopId(req), createdById: actorId(req) }, key, undefined, shopId(req)),
   });
 });
 
 export const getDashboardSummary = endpoint(async (req, res) => {
   const date = parse(cashbookDate, req.query.date) ?? todayBusinessDate();
-  return res.json({ success: true, data: await dashboard.getDashboardSummary(date) });
+  return res.json({ success: true, data: await dashboard.getDashboardSummary(date, undefined, shopId(req)) });
 });
 
 const createPurchaseOrderSchema = z.object({
@@ -331,7 +342,7 @@ export const getPurchaseList = endpoint(async (req, res) => {
     search: z.string().optional(),
     filter: z.enum(['ALL', 'LOW_STOCK', 'OUT_OF_STOCK']).optional(),
   }), req.query);
-  return res.json({ success: true, data: await purchaseOrders.getPurchaseList(filter) });
+  return res.json({ success: true, data: await purchaseOrders.getPurchaseList({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const listPurchaseOrders = endpoint(async (req, res) => {
@@ -342,11 +353,11 @@ export const listPurchaseOrders = endpoint(async (req, res) => {
     page: z.coerce.number().int().positive().default(1),
     pageSize: z.coerce.number().int().positive().max(100).default(50),
   }), req.query);
-  return res.json({ success: true, data: await purchaseOrders.listPurchaseOrders(filter) });
+  return res.json({ success: true, data: await purchaseOrders.listPurchaseOrders({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getPurchaseOrder = endpoint(async (req, res) => {
-  return res.json({ success: true, data: await purchaseOrders.getPurchaseOrder(String(req.params.id)) });
+  return res.json({ success: true, data: await purchaseOrders.getPurchaseOrder(String(req.params.id), undefined, shopId(req)) });
 });
 
 export const createPurchaseOrder = endpoint(async (req, res) => {
@@ -355,8 +366,10 @@ export const createPurchaseOrder = endpoint(async (req, res) => {
   return res.status(201).json({
     success: true,
     data: await purchaseOrders.createPurchaseOrder(
-      { ...input, supplier: input.supplier ?? '', createdById: actorId(req) },
+      { ...input, shopId: shopId(req), supplier: input.supplier ?? '', createdById: actorId(req) },
       key,
+      undefined,
+      shopId(req),
     ),
   });
 });
@@ -367,8 +380,10 @@ export const updatePurchaseOrder = endpoint(async (req, res) => {
     success: true,
     data: await purchaseOrders.updatePurchaseOrder(
       String(req.params.id),
-      input,
+      { ...input, shopId: shopId(req) },
       actorId(req),
+      undefined,
+      shopId(req),
     ),
   });
 });
@@ -385,6 +400,8 @@ export const updatePurchaseOrderStatus = endpoint(async (req, res) => {
       input.status,
       input.notes,
       actorId(req),
+      undefined,
+      shopId(req),
     ),
   });
 });
@@ -399,6 +416,8 @@ export const cancelPurchaseOrder = endpoint(async (req, res) => {
       String(req.params.id),
       input.reason,
       actorId(req),
+      undefined,
+      shopId(req),
     ),
   });
 });
@@ -411,12 +430,14 @@ export const reorderPurchaseOrder = endpoint(async (req, res) => {
       String(req.params.id),
       actorId(req),
       key,
+      undefined,
+      shopId(req),
     ),
   });
 });
 
 export const getPurchaseOrderText = endpoint(async (req, res) => {
-  const order = await purchaseOrders.getPurchaseOrder(String(req.params.id));
+  const order = await purchaseOrders.getPurchaseOrder(String(req.params.id), undefined, shopId(req));
   const text = purchaseOrders.generateOrderText(order);
   const phone = order.supplierRel?.phone ?? null;
   const whatsappUrl = purchaseOrders.generateWhatsAppUrl(text, phone);
@@ -456,11 +477,11 @@ export const listSaleReturns = endpoint(async (req, res) => {
     customerId: z.string().optional(),
     search: z.string().optional(),
   }), req.query);
-  return res.json({ success: true, data: await returns.listSaleReturns(filter) });
+  return res.json({ success: true, data: await returns.listSaleReturns(filter, undefined, shopId(req)) });
 });
 
 export const getSaleReturn = endpoint(async (req, res) => {
-  return res.json({ success: true, data: await returns.getSaleReturn(String(req.params.id)) });
+  return res.json({ success: true, data: await returns.getSaleReturn(String(req.params.id), undefined, shopId(req)) });
 });
 
 export const createSaleReturn = endpoint(async (req, res) => {
@@ -470,9 +491,10 @@ export const createSaleReturn = endpoint(async (req, res) => {
     success: true,
     data: await returns.createSaleReturn({
       ...input,
+      shopId: shopId(req),
       createdById: actorId(req),
       idempotencyKey: key,
-    }),
+    }, undefined, shopId(req)),
   });
 });
 
@@ -499,11 +521,11 @@ export const listPurchaseReturns = endpoint(async (req, res) => {
     purchaseId: z.string().optional(),
     search: z.string().optional(),
   }), req.query);
-  return res.json({ success: true, data: await returns.listPurchaseReturns(filter) });
+  return res.json({ success: true, data: await returns.listPurchaseReturns(filter, undefined, shopId(req)) });
 });
 
 export const getPurchaseReturn = endpoint(async (req, res) => {
-  return res.json({ success: true, data: await returns.getPurchaseReturn(String(req.params.id)) });
+  return res.json({ success: true, data: await returns.getPurchaseReturn(String(req.params.id), undefined, shopId(req)) });
 });
 
 export const createPurchaseReturn = endpoint(async (req, res) => {
@@ -513,9 +535,10 @@ export const createPurchaseReturn = endpoint(async (req, res) => {
     success: true,
     data: await returns.createPurchaseReturn({
       ...input,
+      shopId: shopId(req),
       createdById: actorId(req),
       idempotencyKey: key,
-    }),
+    }, undefined, shopId(req)),
   });
 });
 
@@ -534,32 +557,32 @@ const reportFilterSchema = z.object({
 
 export const getSalesReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getSalesReport(filter) });
+  return res.json({ success: true, data: await reports.getSalesReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getPurchaseReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getPurchaseReport(filter) });
+  return res.json({ success: true, data: await reports.getPurchaseReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getExpenseReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getExpenseReport(filter) });
+  return res.json({ success: true, data: await reports.getExpenseReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getCashbookReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getCashbookReport(filter) });
+  return res.json({ success: true, data: await reports.getCashbookReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getProfitReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getProfitReport(filter) });
+  return res.json({ success: true, data: await reports.getProfitReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getGstReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getGstReport(filter) });
+  return res.json({ success: true, data: await reports.getGstReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getInventoryValuationReport = endpoint(async (req, res) => {
@@ -567,25 +590,25 @@ export const getInventoryValuationReport = endpoint(async (req, res) => {
     categoryId: z.string().optional(),
     supplierId: z.string().optional(),
   }), req.query);
-  return res.json({ success: true, data: await reports.getInventoryValuationReport(filter) });
+  return res.json({ success: true, data: await reports.getInventoryValuationReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
-export const getCustomerOutstandingReport = endpoint(async (_req, res) => {
-  return res.json({ success: true, data: await reports.getCustomerOutstandingReport() });
+export const getCustomerOutstandingReport = endpoint(async (req, res) => {
+  return res.json({ success: true, data: await reports.getCustomerOutstandingReport(undefined, shopId(req)) });
 });
 
-export const getSupplierOutstandingReport = endpoint(async (_req, res) => {
-  return res.json({ success: true, data: await reports.getSupplierOutstandingReport() });
+export const getSupplierOutstandingReport = endpoint(async (req, res) => {
+  return res.json({ success: true, data: await reports.getSupplierOutstandingReport(undefined, shopId(req)) });
 });
 
 export const getProductAnalyticsReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getProductAnalyticsReport(filter) });
+  return res.json({ success: true, data: await reports.getProductAnalyticsReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getCategoryAnalyticsReport = endpoint(async (req, res) => {
   const filter = parse(reportFilterSchema, req.query);
-  return res.json({ success: true, data: await reports.getCategoryAnalyticsReport(filter) });
+  return res.json({ success: true, data: await reports.getCategoryAnalyticsReport({ ...filter, shopId: shopId(req) }, undefined, shopId(req)) });
 });
 
 export const getMonthlyTargetReport = endpoint(async (req, res) => {
@@ -593,7 +616,7 @@ export const getMonthlyTargetReport = endpoint(async (req, res) => {
     year: z.coerce.number().int().optional(),
     month: z.coerce.number().int().min(1).max(12).optional(),
   }), req.query);
-  return res.json({ success: true, data: await reports.getMonthlyTargetReport(query.year, query.month) });
+  return res.json({ success: true, data: await reports.getMonthlyTargetReport(query.year, query.month, undefined, shopId(req)) });
 });
 
 export const setMonthlyTarget = endpoint(async (req, res) => {
@@ -604,7 +627,7 @@ export const setMonthlyTarget = endpoint(async (req, res) => {
   }), req.body);
   return res.json({
     success: true,
-    data: await reports.setMonthlyTarget(body.year, body.month, body.targetAmount, actorId(req)),
+    data: await reports.setMonthlyTarget(body.year, body.month, body.targetAmount, actorId(req), undefined, shopId(req)),
   });
 });
 
@@ -613,13 +636,13 @@ export const setMonthlyTarget = endpoint(async (req, res) => {
 // ==========================================
 
 export const getSaleReceipt = endpoint(async (req, res) => {
-  const data = await receipts.getReceiptData(String(req.params.id));
+  const data = await receipts.getReceiptData(String(req.params.id), undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
 export const getSaleInvoicePdf = async (req: Request, res: Response, next: NextFunction) => {
   try {
-    const { buffer, filename } = await invoicePdf.generateInvoicePdfBuffer(String(req.params.id));
+    const { buffer, filename } = await invoicePdf.generateInvoicePdfBuffer(String(req.params.id), undefined, shopId(req));
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
     res.setHeader('Content-Length', buffer.length);
@@ -629,8 +652,8 @@ export const getSaleInvoicePdf = async (req: Request, res: Response, next: NextF
   }
 };
 
-export const getStoreSettings = endpoint(async (_req, res) => {
-  const data = await receipts.getStoreSettings();
+export const getStoreSettings = endpoint(async (req, res) => {
+  const data = await receipts.getStoreSettings(undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
@@ -648,7 +671,7 @@ export const updateStoreSettings = endpoint(async (req, res) => {
     invoiceTerms: z.string().trim().optional(),
   });
   const parsed = parse(schema, req.body);
-  const data = await receipts.updateStoreSettings(parsed);
+  const data = await receipts.updateStoreSettings(parsed, undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
@@ -656,8 +679,8 @@ export const updateStoreSettings = endpoint(async (req, res) => {
 // PHASE 11: TELEGRAM & WHATSAPP INTEGRATION
 // ==========================================
 
-export const getTelegramStatus = endpoint(async (_req, res) => {
-  const config = await telegram.getTelegramConfig();
+export const getTelegramStatus = endpoint(async (req, res) => {
+  const config = await telegram.getTelegramConfig(undefined, shopId(req));
   return res.json({ success: true, data: config });
 });
 
@@ -679,47 +702,48 @@ export const updateTelegramConfig = endpoint(async (req, res) => {
     }).optional(),
   });
   const parsed = parse(schema, req.body);
-  const data = await telegram.updateTelegramConfig(parsed, undefined, actorId(req));
+  const data = await telegram.updateTelegramConfig(parsed, undefined, actorId(req), shopId(req));
   return res.json({ success: true, data });
 });
 
 export const testTelegramConnection = endpoint(async (req, res) => {
-  const result = await telegram.testTelegramConnection(undefined, actorId(req));
+  const result = await telegram.sendTelegramRawMessage('Test notification from Pharmora POS', { shopId: shopId(req) }, undefined, { userId: actorId(req), shopId: shopId(req) });
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerDailySummary = endpoint(async (req, res) => {
-  const result = await telegram.sendDailySummary(req.body?.date, undefined, actorId(req));
+  const result = await telegram.sendDailySummary(req.body?.date, undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerMonthlySummary = endpoint(async (req, res) => {
-  const result = await telegram.sendMonthlySummary(req.body?.year, req.body?.month, undefined, actorId(req));
+  const result = await telegram.sendMonthlySummary(req.body?.year, req.body?.month, undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerLowStockAlert = endpoint(async (req, res) => {
-  const result = await telegram.sendLowStockAlert(undefined, actorId(req));
+  const result = await telegram.sendLowStockAlert(undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerExpiryAlert = endpoint(async (req, res) => {
-  const result = await telegram.sendExpiryAlert(undefined, actorId(req));
+  const result = await telegram.sendExpiryAlert(undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerCustomerDuesAlert = endpoint(async (req, res) => {
-  const result = await telegram.sendCustomerDueSummary(undefined, actorId(req));
+  const result = await telegram.sendCustomerDuesSummary(undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
 export const triggerSupplierDuesAlert = endpoint(async (req, res) => {
-  const result = await telegram.sendSupplierDueSummary(undefined, actorId(req));
+  const result = await telegram.sendSupplierDuesSummary(undefined, actorId(req), shopId(req));
   return res.json({ success: result.success, data: result });
 });
 
-export const listNotificationHistory = endpoint(async (_req, res) => {
+export const listNotificationHistory = endpoint(async (req, res) => {
   const events = await prisma.telegramEvent.findMany({
+    where: { shopId: shopId(req) },
     orderBy: { createdAt: 'desc' },
     take: 50,
   });
@@ -728,27 +752,21 @@ export const listNotificationHistory = endpoint(async (_req, res) => {
 
 // WhatsApp Endpoints
 export const getWhatsAppInvoice = endpoint(async (req, res) => {
-  const data = await whatsapp.generateCustomerInvoiceWhatsApp(String(req.params.saleId));
+  const data = await whatsapp.generateCustomerInvoiceWhatsApp(String(req.params.saleId), undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
 export const getWhatsAppPaymentReceipt = endpoint(async (req, res) => {
-  const data = await whatsapp.generateCustomerPaymentReceiptWhatsApp(String(req.params.paymentId));
+  const data = await whatsapp.generateCustomerPaymentReceiptWhatsApp(String(req.params.paymentId), undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
 export const getWhatsAppDueReminder = endpoint(async (req, res) => {
-  const data = await whatsapp.generateCustomerDueReminderWhatsApp(String(req.params.customerId));
+  const data = await whatsapp.generateCustomerDueReminderWhatsApp(String(req.params.customerId), undefined, shopId(req));
   return res.json({ success: true, data });
 });
 
 export const getWhatsAppPurchaseOrder = endpoint(async (req, res) => {
-  const data = await whatsapp.generatePurchaseOrderWhatsApp(String(req.params.orderId));
+  const data = await whatsapp.generatePurchaseOrderWhatsApp(String(req.params.orderId), undefined, shopId(req));
   return res.json({ success: true, data });
 });
-
-
-
-
-
-

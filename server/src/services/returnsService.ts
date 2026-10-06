@@ -16,6 +16,7 @@ export type SaleReturnItemInput = {
 };
 
 export type SaleReturnInput = {
+  shopId?: string;
   saleId: string;
   items: SaleReturnItemInput[];
   refundMethod?: PaymentMethod;
@@ -36,6 +37,7 @@ export type PurchaseReturnItemInput = {
 };
 
 export type PurchaseReturnInput = {
+  shopId?: string;
   supplierId: string;
   purchaseId?: string;
   items: PurchaseReturnItemInput[];
@@ -57,7 +59,7 @@ const generateReturnNumber = (prefix: 'SR' | 'PR') => {
 // 1. SALES RETURNS (Customer Refunds)
 // ==========================================
 
-export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient) => {
+export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient, shopId?: string) => {
   if (!input.saleId?.trim()) throw invalid('Sale ID is required for a sales return');
   if (!Array.isArray(input.items) || input.items.length === 0) throw invalid('Sales return must include at least one item');
   const key = idempotencyKey(input.idempotencyKey);
@@ -81,20 +83,35 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
     }
 
     // 2. Fetch origin Sale with its items and past returns
-    const originSale = await tx.sale.findUnique({
-      where: { id: input.saleId },
-      include: {
-        customer: true,
-        items: {
+    const originSale = tx.sale.findFirst
+      ? await tx.sale.findFirst({
+          where: { id: input.saleId, ...(shopId ? { shopId } : {}) },
           include: {
-            returnItems: true,
-            product: true,
-            batch: true,
+            customer: true,
+            items: {
+              include: {
+                returnItems: true,
+                product: true,
+                batch: true,
+              },
+            },
           },
-        },
-      },
-    });
+        })
+      : await tx.sale.findUnique({
+          where: { id: input.saleId },
+          include: {
+            customer: true,
+            items: {
+              include: {
+                returnItems: true,
+                product: true,
+                batch: true,
+              },
+            },
+          },
+        });
     if (!originSale) throw missing('Sale');
+    const targetShopId = shopId || input.shopId || originSale.shopId || 'default-shop-pharmora';
 
     // 3. Validate return lines against origin sale items and calculate refund
     const processedLines: Array<{
@@ -104,38 +121,38 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
       quantity: number;
       unitPrice: Prisma.Decimal;
       totalAmount: Prisma.Decimal;
-      condition: ReturnCondition;
+      condition: string;
       restocked: boolean;
       reason: string | null;
       notes: string | null;
     }> = [];
 
     for (const [index, line] of input.items.entries()) {
-      if (!line.saleItemId?.trim()) throw invalid(`Item #${index + 1}: Sale item ID is required`);
+      if (!line.saleItemId?.trim()) throw invalid(`Item #${index + 1}: Sale Item ID is required`);
       positiveQuantity(line.quantity, `Item #${index + 1} return quantity`);
 
-      const saleItem = originSale.items.find((it) => it.id === line.saleItemId);
+      const saleItem = originSale.items.find((item) => item.id === line.saleItemId);
       if (!saleItem) {
-        throw invalid(`Item #${index + 1}: Sale item does not belong to sale ${originSale.saleNumber ?? originSale.id}`);
+        throw missing(`Sale item #${index + 1} not found in origin sale`);
       }
 
-      // Check cumulative returns against original sold quantity
-      const alreadyReturnedQty = saleItem.returnItems.reduce((sum, ret) => sum + ret.quantity, 0);
-      const remainingReturnable = saleItem.quantity - alreadyReturnedQty;
+      // Compute total returned quantity previously for this saleItem
+      const previouslyReturned = saleItem.returnItems.reduce((sum, ret) => sum + ret.quantity, 0);
+      const remainingReturnable = saleItem.quantity - previouslyReturned;
+
       if (line.quantity > remainingReturnable) {
         throw ruleViolation(
-          `Cannot return ${line.quantity} units for product ${saleItem.product?.name ?? saleItem.productId}. ` +
-          `Originally sold: ${saleItem.quantity}, already returned: ${alreadyReturnedQty}, max returnable: ${remainingReturnable}.`
+          `Cannot return ${line.quantity} units for product ${saleItem.product.name}. Max returnable: ${remainingReturnable} (Sold: ${saleItem.quantity}, Already returned: ${previouslyReturned})`
         );
       }
 
-      const condition: ReturnCondition = line.condition ?? 'RESTOCKABLE';
+      const condition = line.condition ?? 'RESTOCKABLE';
       const restocked = condition === 'RESTOCKABLE';
 
-      // Determine unit price
+      // Refund Unit Price calculation:
       let unitRefundDecimal: Prisma.Decimal;
       if (line.unitPrice !== undefined) {
-        unitRefundDecimal = nonNegativeMoney(line.unitPrice, `Item #${index + 1} unit price`);
+        unitRefundDecimal = nonNegativeMoney(line.unitPrice, `Item #${index + 1} unit refund price`);
       } else {
         // Effective unit price = sellingPrice - (discount / quantity)
         const itemSellingPrice = Number(saleItem.sellingPrice);
@@ -170,6 +187,7 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
     // 4. Create SaleReturn record
     const saleReturn = await tx.saleReturn.create({
       data: {
+        shopId: targetShopId,
         returnNumber,
         saleId: originSale.id,
         customerId: originSale.customerId,
@@ -204,7 +222,7 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
       let batchId = line.batchId;
       if (!batchId) {
         const firstBatch = await tx.productBatch.findFirst({
-          where: { productId: line.productId },
+          where: { productId: line.productId, shopId: targetShopId },
           orderBy: { createdAt: 'desc' },
         });
         if (firstBatch) {
@@ -212,6 +230,7 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
         } else {
           const newBatch = await tx.productBatch.create({
             data: {
+              shopId: targetShopId,
               productId: line.productId,
               batchNumber: `RET-${saleReturn.returnNumber || 'BATCH'}`,
               purchaseRate: 0,
@@ -269,6 +288,7 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
       } else {
         // Cash / UPI / Bank refund via Cashbook entry
         await writeCashbookEntry(tx, {
+          shopId: targetShopId,
           entryType: 'CUSTOMER_REFUND',
           direction: 'OUT',
           amount: totalRefundAmount,
@@ -286,6 +306,7 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
     // 7. Audit Log
     await tx.auditLog.create({
       data: {
+        shopId: targetShopId,
         userId: input.createdById,
         action: 'SALE_RETURN_CREATED',
         entityType: 'SaleReturn',
@@ -314,11 +335,13 @@ export const createSaleReturn = async (input: SaleReturnInput, client?: DbClient
   });
 };
 
-export const listSaleReturns = async (filters: { saleId?: string; customerId?: string; search?: string } = {}, client?: DbClient) => {
+export const listSaleReturns = async (filters: { saleId?: string; customerId?: string; search?: string; shopId?: string } = {}, client?: DbClient, shopId?: string) => {
   const db = database(client);
   const query = filters.search?.trim();
+  const targetShopId = shopId || filters.shopId || 'default-shop-pharmora';
   return db.saleReturn.findMany({
     where: {
+      shopId: targetShopId,
       saleId: filters.saleId,
       customerId: filters.customerId,
       OR: query
@@ -339,10 +362,10 @@ export const listSaleReturns = async (filters: { saleId?: string; customerId?: s
   });
 };
 
-export const getSaleReturn = async (id: string, client?: DbClient) => {
+export const getSaleReturn = async (id: string, client?: DbClient, shopId?: string) => {
   const db = database(client);
-  const saleReturn = await db.saleReturn.findUnique({
-    where: { id },
+  const saleReturn = await db.saleReturn.findFirst({
+    where: { id, ...(shopId ? { shopId } : {}) },
     include: {
       sale: {
         include: {
@@ -369,11 +392,12 @@ export const getSaleReturn = async (id: string, client?: DbClient) => {
 // 2. PURCHASE RETURNS (Supplier Returns / Debit Notes)
 // ==========================================
 
-export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: DbClient) => {
+export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: DbClient, shopId?: string) => {
   if (!input.supplierId?.trim()) throw invalid('Supplier ID is required for a purchase return');
   if (!Array.isArray(input.items) || input.items.length === 0) throw invalid('Purchase return must include at least one item');
   const key = idempotencyKey(input.idempotencyKey);
   const refundMethod: PaymentMethod = input.refundMethod ?? 'CREDIT';
+  const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
 
   return withTransaction(client, async (tx) => {
     // 1. Idempotency Check
@@ -393,13 +417,17 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
     }
 
     // 2. Validate Supplier
-    const supplier = await tx.supplier.findUnique({ where: { id: input.supplierId } });
+    const supplier = tx.supplier.findFirst
+      ? await tx.supplier.findFirst({ where: { id: input.supplierId, shopId: targetShopId } })
+      : await tx.supplier.findUnique({ where: { id: input.supplierId } });
     if (!supplier) throw missing('Supplier');
 
     // 3. Optional Purchase validation
     let purchase: any = null;
     if (input.purchaseId) {
-      purchase = await tx.purchase.findUnique({ where: { id: input.purchaseId } });
+      purchase = tx.purchase.findFirst
+        ? await tx.purchase.findFirst({ where: { id: input.purchaseId, shopId: targetShopId } })
+        : await tx.purchase.findUnique({ where: { id: input.purchaseId } });
       if (!purchase) throw missing('Purchase');
       if (purchase.supplierId !== input.supplierId) {
         throw ruleViolation('Selected purchase does not belong to the selected supplier');
@@ -424,10 +452,14 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
       if (!line.batchId?.trim()) throw invalid(`Item #${index + 1}: Batch ID is required`);
       positiveQuantity(line.quantity, `Item #${index + 1} return quantity`);
 
-      const product = await tx.product.findUnique({ where: { id: line.productId } });
+      const product = tx.product.findFirst
+        ? await tx.product.findFirst({ where: { id: line.productId, shopId: targetShopId } })
+        : await tx.product.findUnique({ where: { id: line.productId } });
       if (!product) throw missing(`Item #${index + 1}: Product`);
 
-      const batch = await tx.productBatch.findUnique({ where: { id: line.batchId } });
+      const batch = tx.productBatch.findFirst
+        ? await tx.productBatch.findFirst({ where: { id: line.batchId, productId: line.productId, shopId: targetShopId } })
+        : await tx.productBatch.findUnique({ where: { id: line.batchId } });
       if (!batch || batch.productId !== line.productId) {
         throw missing(`Item #${index + 1}: Product batch`);
       }
@@ -467,6 +499,7 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
     // 5. Create PurchaseReturn
     const purchaseReturn = await tx.purchaseReturn.create({
       data: {
+        shopId: targetShopId,
         returnNumber,
         supplierId: supplier.id,
         purchaseId: purchase?.id ?? null,
@@ -529,6 +562,7 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
       } else {
         // Direct cash/bank refund from supplier -> Cashbook IN
         await writeCashbookEntry(tx, {
+          shopId: targetShopId,
           entryType: 'CASH_RECEIVED',
           direction: 'IN',
           amount: totalReturnAmount,
@@ -546,6 +580,7 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
     // 8. Audit Log
     await tx.auditLog.create({
       data: {
+        shopId: targetShopId,
         userId: input.createdById,
         action: 'PURCHASE_RETURN_CREATED',
         entityType: 'PurchaseReturn',
@@ -574,11 +609,13 @@ export const createPurchaseReturn = async (input: PurchaseReturnInput, client?: 
   });
 };
 
-export const listPurchaseReturns = async (filters: { supplierId?: string; purchaseId?: string; search?: string } = {}, client?: DbClient) => {
+export const listPurchaseReturns = async (filters: { supplierId?: string; purchaseId?: string; search?: string; shopId?: string } = {}, client?: DbClient, shopId?: string) => {
   const db = database(client);
   const query = filters.search?.trim();
+  const targetShopId = shopId || filters.shopId || 'default-shop-pharmora';
   return db.purchaseReturn.findMany({
     where: {
+      shopId: targetShopId,
       supplierId: filters.supplierId,
       purchaseId: filters.purchaseId,
       OR: query
@@ -599,10 +636,10 @@ export const listPurchaseReturns = async (filters: { supplierId?: string; purcha
   });
 };
 
-export const getPurchaseReturn = async (id: string, client?: DbClient) => {
+export const getPurchaseReturn = async (id: string, client?: DbClient, shopId?: string) => {
   const db = database(client);
-  const purchaseReturn = await db.purchaseReturn.findUnique({
-    where: { id },
+  const purchaseReturn = await db.purchaseReturn.findFirst({
+    where: { id, ...(shopId ? { shopId } : {}) },
     include: {
       supplier: true,
       purchase: {

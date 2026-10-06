@@ -22,6 +22,7 @@ export type ReportDateRange = {
 };
 
 export type ReportFilterInput = {
+  shopId?: string;
   preset?: DateRangePreset;
   startDate?: string | Date;
   endDate?: string | Date;
@@ -57,8 +58,8 @@ export const resolveDateRange = (filters: ReportFilterInput = {}): ReportDateRan
     }
     case 'THIS_WEEK': {
       start = new Date(todayUtc);
-      const day = start.getUTCDay(); // 0 is Sun, 1 is Mon
-      const diff = (day === 0 ? 6 : day - 1); // Monday as start of week
+      const day = start.getUTCDay();
+      const diff = (day === 0 ? 6 : day - 1);
       start.setUTCDate(start.getUTCDate() - diff);
       end = new Date(todayUtc);
       end.setUTCHours(23, 59, 59, 999);
@@ -107,13 +108,10 @@ export const resolveDateRange = (filters: ReportFilterInput = {}): ReportDateRan
   };
 };
 
-// Generate an array of business dates between start and end
 const getBusinessDatesInRange = (startDate: Date, endDate: Date): Date[] => {
   const dates: Date[] = [];
-  const current = new Date(startDate);
-  current.setUTCHours(0, 0, 0, 0);
-  const end = new Date(endDate);
-  end.setUTCHours(0, 0, 0, 0);
+  const current = new Date(Date.UTC(startDate.getUTCFullYear(), startDate.getUTCMonth(), startDate.getUTCDate()));
+  const end = new Date(Date.UTC(endDate.getUTCFullYear(), endDate.getUTCMonth(), endDate.getUTCDate()));
 
   while (current <= end) {
     dates.push(new Date(current));
@@ -126,23 +124,24 @@ const getBusinessDatesInRange = (startDate: Date, endDate: Date): Date[] => {
 // 1. SALES REPORT (No Double Counting)
 // ==========================================
 
-export const getSalesReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getSalesReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
   const dates = getBusinessDatesInRange(range.startDate, range.endDate);
 
-  // Fetch sales returns in date range
   const salesReturns = await db.saleReturn.findMany({
     where: {
+      shopId: targetShopId,
       createdAt: { gte: range.startDate, lte: range.endDate },
       ...(filters.customerId ? { customerId: filters.customerId } : {}),
     },
     include: { items: { include: { product: true } } },
   });
 
-  // Fetch POS sales with line details
   const posSales = await db.sale.findMany({
     where: {
+      shopId: targetShopId,
       saleDate: { gte: range.startDate, lte: range.endDate },
       status: 'COMPLETED',
       ...(filters.customerId ? { customerId: filters.customerId } : {}),
@@ -155,7 +154,6 @@ export const getSalesReport = async (filters: ReportFilterInput = {}, client?: D
     orderBy: { saleDate: 'desc' },
   });
 
-  // Calculate day-by-day reconciled sales to prevent duplicate counting
   let totalPosCash = 0;
   let totalPosUpi = 0;
   let totalPosCredit = 0;
@@ -176,7 +174,7 @@ export const getSalesReport = async (filters: ReportFilterInput = {}, client?: D
   }> = [];
 
   for (const date of dates) {
-    const recon = await getDailySalesReconciliation(date, client as any);
+    const recon = await getDailySalesReconciliation(date, client as any, targetShopId);
     totalPosCash += recon.posCashSales;
     totalPosUpi += recon.posUpiSales;
     totalPosCredit += recon.posCreditSales;
@@ -202,7 +200,6 @@ export const getSalesReport = async (filters: ReportFilterInput = {}, client?: D
   const totalSalesReturns = round(salesReturns.reduce((acc, r) => acc + Number(r.totalAmount), 0));
   const netSales = round(Math.max(0, grossSales - totalSalesReturns));
 
-  // Item and invoice metrics
   const invoiceCount = posSales.length;
   let totalItemsSold = 0;
   let totalDiscountGiven = 0;
@@ -258,13 +255,15 @@ export const getSalesReport = async (filters: ReportFilterInput = {}, client?: D
 // 2. PURCHASE REPORT
 // ==========================================
 
-export const getPurchaseReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getPurchaseReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const [purchases, purchaseReturns] = await Promise.all([
     db.purchase.findMany({
       where: {
+        shopId: targetShopId,
         invoiceDate: { gte: range.startDate, lte: range.endDate },
         ...(filters.supplierId ? { supplierId: filters.supplierId } : {}),
       },
@@ -276,6 +275,7 @@ export const getPurchaseReport = async (filters: ReportFilterInput = {}, client?
     }),
     db.purchaseReturn.findMany({
       where: {
+        shopId: targetShopId,
         createdAt: { gte: range.startDate, lte: range.endDate },
         ...(filters.supplierId ? { supplierId: filters.supplierId } : {}),
       },
@@ -363,12 +363,14 @@ export const getPurchaseReport = async (filters: ReportFilterInput = {}, client?
 // 3. EXPENSE REPORT
 // ==========================================
 
-export const getExpenseReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getExpenseReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const expenses = await db.expense.findMany({
     where: {
+      shopId: targetShopId,
       expenseDate: { gte: range.startDate, lte: range.endDate },
     },
     include: { createdBy: { select: { id: true, name: true } } },
@@ -431,12 +433,14 @@ export const getExpenseReport = async (filters: ReportFilterInput = {}, client?:
 // 4. CASHBOOK & RECONCILIATION REPORT
 // ==========================================
 
-export const getCashbookReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getCashbookReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const entries = await db.cashbookEntry.findMany({
     where: {
+      shopId: targetShopId,
       businessDate: { gte: range.startDate, lte: range.endDate },
     },
     include: { createdBy: { select: { id: true, name: true } } },
@@ -467,9 +471,8 @@ export const getCashbookReport = async (filters: ReportFilterInput = {}, client?
     }
   }
 
-  // Get daily closing summary for the date range
   const dailyClosings = await db.dailyClosing.findMany({
-    where: { closingDate: { gte: range.startDate, lte: range.endDate } },
+    where: { shopId: targetShopId, closingDate: { gte: range.startDate, lte: range.endDate } },
     orderBy: { closingDate: 'desc' },
   });
 
@@ -533,18 +536,18 @@ export const getCashbookReport = async (filters: ReportFilterInput = {}, client?
 // 5. PROFIT & COGS REPORT
 // ==========================================
 
-export const getProfitReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getProfitReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
-  // 1. Get Reconciled Sales
-  const salesReport = await getSalesReport(filters, client);
+  const salesReport = await getSalesReport(filters, client, targetShopId);
   const netSales = salesReport.summary.netSales;
   const grossSales = salesReport.summary.grossSales;
 
-  // 2. Compute POS COGS directly from sold batch allocations
   const posSalesWithBatches = await db.sale.findMany({
     where: {
+      shopId: targetShopId,
       saleDate: { gte: range.startDate, lte: range.endDate },
       status: 'COMPLETED',
     },
@@ -564,9 +567,9 @@ export const getProfitReport = async (filters: ReportFilterInput = {}, client?: 
     }
   }
 
-  // 3. Compute Sales Return COGS Reversal
   const salesReturns = await db.saleReturn.findMany({
     where: {
+      shopId: targetShopId,
       createdAt: { gte: range.startDate, lte: range.endDate },
     },
     include: {
@@ -584,25 +587,20 @@ export const getProfitReport = async (filters: ReportFilterInput = {}, client?: 
 
   const netPosCogs = round(Math.max(0, posSoldCogs - returnCogsReversal));
 
-  // 4. If Non-POS daily sales exist, estimate cost using POS cost ratio
   let nonPosCogs = 0;
   const nonPosSalesAmount = salesReport.summary.nonPosSales;
   if (nonPosSalesAmount > 0) {
-    const costRatio = totalPosRevenue > 0 ? posSoldCogs / totalPosRevenue : 0.70; // 70% default cost if no POS sales
+    const costRatio = totalPosRevenue > 0 ? posSoldCogs / totalPosRevenue : 0.70;
     nonPosCogs = round(nonPosSalesAmount * costRatio);
   }
 
   const totalCogs = round(netPosCogs + nonPosCogs);
-
-  // 5. Gross Profit
   const grossProfit = round(netSales - totalCogs);
   const grossMarginPercentage = safeDiv(grossProfit, netSales);
 
-  // 6. Operating Expenses
-  const expenseReport = await getExpenseReport(filters, client);
+  const expenseReport = await getExpenseReport(filters, client, targetShopId);
   const operatingExpenses = expenseReport.summary.totalExpenses;
 
-  // 7. Net Profit
   const netProfit = round(grossProfit - operatingExpenses);
   const netMarginPercentage = safeDiv(netProfit, netSales);
 
@@ -632,25 +630,26 @@ export const getProfitReport = async (filters: ReportFilterInput = {}, client?: 
 // 6. GST SUMMARY / MANAGEMENT REPORT
 // ==========================================
 
-export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const [sales, saleReturns, purchases, purchaseReturns] = await Promise.all([
     db.sale.findMany({
-      where: { saleDate: { gte: range.startDate, lte: range.endDate }, status: 'COMPLETED' },
+      where: { shopId: targetShopId, saleDate: { gte: range.startDate, lte: range.endDate }, status: 'COMPLETED' },
       include: { items: true },
     }),
     db.saleReturn.findMany({
-      where: { createdAt: { gte: range.startDate, lte: range.endDate } },
+      where: { shopId: targetShopId, createdAt: { gte: range.startDate, lte: range.endDate } },
       include: { items: { include: { saleItem: true } } },
     }),
     db.purchase.findMany({
-      where: { invoiceDate: { gte: range.startDate, lte: range.endDate } },
+      where: { shopId: targetShopId, invoiceDate: { gte: range.startDate, lte: range.endDate } },
       include: { items: true },
     }),
     db.purchaseReturn.findMany({
-      where: { createdAt: { gte: range.startDate, lte: range.endDate } },
+      where: { shopId: targetShopId, createdAt: { gte: range.startDate, lte: range.endDate } },
       include: { items: { include: { purchaseItem: true } } },
     }),
   ]);
@@ -678,7 +677,6 @@ export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbC
     }
   }
 
-  // Less Sales Return GST Reversals
   let outputGstReversed = 0;
   for (const ret of saleReturns) {
     for (const it of ret.items) {
@@ -691,7 +689,6 @@ export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbC
 
   const netOutputGst = round(Math.max(0, totalOutputGst - outputGstReversed));
 
-  // Purchases Input GST
   const purchaseGstByRate: { [rate: string]: { taxable: number; cgst: number; sgst: number; totalGst: number } } = {};
   let totalInputTaxable = 0;
   let totalInputGst = 0;
@@ -715,7 +712,6 @@ export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbC
     }
   }
 
-  // Less Purchase Return GST Reversals
   let inputGstReversed = 0;
   for (const pr of purchaseReturns) {
     for (const it of pr.items) {
@@ -773,7 +769,8 @@ export const getGstReport = async (filters: ReportFilterInput = {}, client?: DbC
 // 7. INVENTORY VALUATION REPORT
 // ==========================================
 
-export const getInventoryValuationReport = async (filters: { categoryId?: string; supplierId?: string } = {}, client?: DbClient) => {
+export const getInventoryValuationReport = async (filters: { categoryId?: string; supplierId?: string; shopId?: string } = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const now = new Date();
   const day30 = new Date(now);
@@ -782,6 +779,7 @@ export const getInventoryValuationReport = async (filters: { categoryId?: string
   const [products, batches] = await Promise.all([
     db.product.findMany({
       where: {
+        shopId: targetShopId,
         ...(filters.categoryId ? { categoryId: filters.categoryId } : {}),
         ...(filters.supplierId ? { supplierId: filters.supplierId } : {}),
       },
@@ -789,6 +787,7 @@ export const getInventoryValuationReport = async (filters: { categoryId?: string
     }),
     db.productBatch.findMany({
       where: {
+        shopId: targetShopId,
         quantity: { gt: 0 },
         ...(filters.supplierId ? { supplierId: filters.supplierId } : {}),
       },
@@ -820,7 +819,6 @@ export const getInventoryValuationReport = async (filters: { categoryId?: string
 
   const potentialGrossMargin = round(Math.max(0, totalMrpValuation - totalCostValuation));
 
-  // Low stock & out of stock products
   const lowStockCount = products.filter((p) => {
     const stock = batches.filter((b) => b.productId === p.id).reduce((sum, b) => sum + b.quantity, 0);
     return stock > 0 && stock <= p.reorderLevel;
@@ -870,9 +868,10 @@ export const getInventoryValuationReport = async (filters: { categoryId?: string
 // 8. CUSTOMER & SUPPLIER OUTSTANDING REPORTS
 // ==========================================
 
-export const getCustomerOutstandingReport = async (client?: DbClient) => {
+export const getCustomerOutstandingReport = async (client?: DbClient, shopId = 'default-shop-pharmora') => {
   const db = database(client);
   const customers = await db.customer.findMany({
+    where: { shopId },
     include: {
       sales: { select: { id: true, saleNumber: true, saleDate: true, totalAmount: true } },
       payments: { select: { id: true, amount: true, paymentDate: true }, orderBy: { paymentDate: 'desc' } },
@@ -906,9 +905,10 @@ export const getCustomerOutstandingReport = async (client?: DbClient) => {
   };
 };
 
-export const getSupplierOutstandingReport = async (client?: DbClient) => {
+export const getSupplierOutstandingReport = async (client?: DbClient, shopId = 'default-shop-pharmora') => {
   const db = database(client);
   const suppliers = await db.supplier.findMany({
+    where: { shopId },
     include: {
       purchases: { select: { id: true, invoiceNumber: true, invoiceDate: true, totalAmount: true, outstandingAmount: true } },
       supplierPayments: { select: { id: true, amount: true, paymentDate: true }, orderBy: { paymentDate: 'desc' } },
@@ -944,24 +944,27 @@ export const getSupplierOutstandingReport = async (client?: DbClient) => {
 // 9. TOP PRODUCTS & CATEGORY ANALYTICS
 // ==========================================
 
-export const getProductAnalyticsReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getProductAnalyticsReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const [saleItems, returnItems, allProducts] = await Promise.all([
     db.saleItem.findMany({
       where: {
+        shopId: targetShopId,
         sale: { saleDate: { gte: range.startDate, lte: range.endDate }, status: 'COMPLETED' },
       },
       include: { product: true, batch: true },
     }),
     db.saleReturnItem.findMany({
       where: {
+        shopId: targetShopId,
         saleReturn: { createdAt: { gte: range.startDate, lte: range.endDate } },
       },
       include: { product: true, batch: true },
     }),
-    db.product.findMany({ select: { id: true, name: true, active: true } }),
+    db.product.findMany({ where: { shopId: targetShopId }, select: { id: true, name: true, active: true } }),
   ]);
 
   const productMetrics: {
@@ -1039,14 +1042,16 @@ export const getProductAnalyticsReport = async (filters: ReportFilterInput = {},
   };
 };
 
-export const getCategoryAnalyticsReport = async (filters: ReportFilterInput = {}, client?: DbClient) => {
+export const getCategoryAnalyticsReport = async (filters: ReportFilterInput = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   const db = database(client);
   const range = resolveDateRange(filters);
 
   const [categories, saleItems] = await Promise.all([
-    db.category.findMany({ select: { id: true, name: true } }),
+    db.category.findMany({ where: { shopId: targetShopId }, select: { id: true, name: true } }),
     db.saleItem.findMany({
       where: {
+        shopId: targetShopId,
         sale: { saleDate: { gte: range.startDate, lte: range.endDate }, status: 'COMPLETED' },
       },
       include: { product: true, batch: true },
@@ -1102,17 +1107,16 @@ export const getCategoryAnalyticsReport = async (filters: ReportFilterInput = {}
 // 10. MONTHLY SALES TARGET
 // ==========================================
 
-export const getMonthlyTargetReport = async (yearInput?: number, monthInput?: number, client?: DbClient) => {
+export const getMonthlyTargetReport = async (yearInput?: number, monthInput?: number, client?: DbClient, shopId = 'default-shop-pharmora') => {
   const db = database(client);
   const now = new Date();
   const year = yearInput ?? now.getUTCFullYear();
   const month = monthInput ?? (now.getUTCMonth() + 1);
 
   const target = await db.salesTarget.findFirst({
-    where: { year, month },
+    where: { year, month, shopId },
   });
 
-  // Calculate actual sales for this month using Reconciled Sales
   const startOfMonth = new Date(Date.UTC(year, month - 1, 1, 0, 0, 0, 0));
   const endOfMonth = new Date(Date.UTC(year, month, 0, 23, 59, 59, 999));
 
@@ -1120,10 +1124,10 @@ export const getMonthlyTargetReport = async (yearInput?: number, monthInput?: nu
     preset: 'CUSTOM',
     startDate: startOfMonth,
     endDate: endOfMonth,
-  }, client);
+  }, client, shopId);
 
   const completedSales = salesReport.summary.netSales;
-  const targetAmount = target ? Number(target.targetAmount) : 500000; // Default ₹5,00,000 if not configured
+  const targetAmount = target ? Number(target.targetAmount) : 500000;
   const remainingSales = round(Math.max(0, targetAmount - completedSales));
   const progressPercentage = safeDiv(completedSales, targetAmount);
 
@@ -1144,11 +1148,12 @@ export const setMonthlyTarget = async (
   targetAmount: number,
   actorId?: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ) => {
   if (targetAmount <= 0) throw invalid('Target amount must be greater than zero');
   const db = database(client);
 
-  const existing = await db.salesTarget.findFirst({ where: { year, month } });
+  const existing = await db.salesTarget.findFirst({ where: { year, month, shopId } });
   if (existing) {
     return db.salesTarget.update({
       where: { id: existing.id },
@@ -1158,6 +1163,7 @@ export const setMonthlyTarget = async (
 
   return db.salesTarget.create({
     data: {
+      shopId,
       year,
       month,
       targetAmount: new Prisma.Decimal(targetAmount),
@@ -1170,16 +1176,16 @@ export const setMonthlyTarget = async (
 // 11. DASHBOARD ANALYTICS & ALIASES
 // ==========================================
 
-export const getDashboardAnalytics = async (client?: DbClient) => {
+export const getDashboardAnalytics = async (client?: DbClient, shopId = 'default-shop-pharmora') => {
   const [salesToday, purchasesToday, expensesToday, cashbookToday, valuation, custDues, suppDues, target] = await Promise.all([
-    getSalesReport({ preset: 'TODAY' }, client),
-    getPurchaseReport({ preset: 'TODAY' }, client),
-    getExpenseReport({ preset: 'TODAY' }, client),
-    getCashbookReport({ preset: 'TODAY' }, client),
-    getInventoryValuationReport({}, client),
-    getCustomerOutstandingReport(client),
-    getSupplierOutstandingReport(client),
-    getMonthlyTargetReport(undefined, undefined, client),
+    getSalesReport({ preset: 'TODAY' }, client, shopId),
+    getPurchaseReport({ preset: 'TODAY' }, client, shopId),
+    getExpenseReport({ preset: 'TODAY' }, client, shopId),
+    getCashbookReport({ preset: 'TODAY' }, client, shopId),
+    getInventoryValuationReport({}, client, shopId),
+    getCustomerOutstandingReport(client, shopId),
+    getSupplierOutstandingReport(client, shopId),
+    getMonthlyTargetReport(undefined, undefined, client, shopId),
   ]);
 
   return {
@@ -1218,14 +1224,13 @@ export const getDashboardAnalytics = async (client?: DbClient) => {
 export const getGstSummaryReport = getGstReport;
 export const getProductAnalytics = getProductAnalyticsReport;
 export const getCategoryAnalytics = getCategoryAnalyticsReport;
-export const getMonthlySalesTarget = async (client?: DbClient) => {
-  const t = await getMonthlyTargetReport(undefined, undefined, client);
+export const getMonthlySalesTarget = async (client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const t = await getMonthlyTargetReport(undefined, undefined, client, shopId);
   return { target: t.targetAmount, completedSales: t.completedSales, remainingSales: t.remainingSales, progressPercentage: t.progressPercentage };
 };
-export const updateMonthlySalesTarget = async (amount: number | string, client?: DbClient, actorId?: string) => {
+export const updateMonthlySalesTarget = async (amount: number | string, client?: DbClient, actorId?: string, shopId = 'default-shop-pharmora') => {
   const num = Number(amount);
   const now = new Date();
-  const saved = await setMonthlyTarget(now.getUTCFullYear(), now.getUTCMonth() + 1, num, actorId, client);
+  const saved = await setMonthlyTarget(now.getUTCFullYear(), now.getUTCMonth() + 1, num, actorId, client, shopId);
   return { monthlyTarget: Number(saved.targetAmount) };
 };
-

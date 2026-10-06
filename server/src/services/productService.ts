@@ -1,9 +1,9 @@
 import { Prisma, type Prisma as PrismaTypes } from '@prisma/client';
-import type { PrismaClient } from '@prisma/client';
 import { database, duplicate, invalid, missing, nonNegativeQuantity, withTransaction, type DbClient } from './domainUtils.js';
 import { nonNegativeMoney, type MoneyInput } from './cashbookMath.js';
 
 export type ProductInput = {
+  shopId?: string;
   name: string;
   genericName?: string;
   brand?: string;
@@ -39,9 +39,10 @@ const validateProduct = (input: ProductInput) => {
 const decimalOrNull = (value: MoneyInput | null | undefined) =>
   value === undefined || value === null ? value : nonNegativeMoney(value);
 
-const productData = (input: ProductInput): PrismaTypes.ProductUncheckedCreateInput => {
+const productData = (input: ProductInput, shopId: string): PrismaTypes.ProductUncheckedCreateInput => {
   validateProduct(input);
   return {
+    shopId,
     name: input.name.trim(),
     genericName: input.genericName?.trim() || null,
     brand: input.brand?.trim() || null,
@@ -66,9 +67,10 @@ const productSnapshot = (product: {
   id: string; name: string; genericName: string | null; brand: string | null; barcode: string | null; sku: string | null;
   categoryId: string | null; gst: PrismaTypes.Decimal | null; mrp: PrismaTypes.Decimal | null;
   sellingPrice: PrismaTypes.Decimal | null; purchasePrice: PrismaTypes.Decimal | null; minStock: number; maxStock: number | null;
-  reorderLevel: number; rackLocation: string | null; active: boolean;
+  reorderLevel: number; rackLocation: string | null; active: boolean; shopId?: string;
 }) => ({
   id: product.id,
+  shopId: product.shopId,
   name: product.name,
   genericName: product.genericName,
   brand: product.brand,
@@ -94,6 +96,7 @@ const auditProduct = (
   oldProduct?: Parameters<typeof productSnapshot>[0],
 ) => tx.auditLog.create({
   data: {
+    shopId: product.shopId,
     userId: actorId,
     action,
     entityType: 'Product',
@@ -103,13 +106,17 @@ const auditProduct = (
   },
 });
 
-const validateRelations = async (tx: PrismaTypes.TransactionClient, input: Pick<ProductInput, 'categoryId' | 'supplierId'>) => {
+const validateRelations = async (
+  tx: PrismaTypes.TransactionClient,
+  input: Pick<ProductInput, 'categoryId' | 'supplierId'>,
+  shopId: string,
+) => {
   if (input.categoryId) {
-    const category = await tx.category.findUnique({ where: { id: input.categoryId } });
+    const category = await tx.category.findFirst({ where: { id: input.categoryId, shopId } });
     if (!category) throw missing('Category');
     if (!category.active) throw invalid('Cannot assign an inactive category to a product');
   }
-  if (input.supplierId && !(await tx.supplier.findUnique({ where: { id: input.supplierId }, select: { id: true } }))) {
+  if (input.supplierId && !(await tx.supplier.findFirst({ where: { id: input.supplierId, shopId }, select: { id: true } }))) {
     throw missing('Supplier');
   }
 };
@@ -117,6 +124,7 @@ const validateRelations = async (tx: PrismaTypes.TransactionClient, input: Pick<
 const validateProductCodes = async (
   tx: PrismaTypes.TransactionClient,
   input: Pick<ProductInput, 'barcode' | 'sku'>,
+  shopId: string,
   excludingId?: string,
 ) => {
   const conditions: PrismaTypes.ProductWhereInput[] = [];
@@ -124,34 +132,44 @@ const validateProductCodes = async (
   if (input.sku) conditions.push({ sku: input.sku.trim() });
   if (!conditions.length) return;
   const match = await tx.product.findFirst({
-    where: { OR: conditions, id: excludingId ? { not: excludingId } : undefined },
+    where: {
+      shopId,
+      OR: conditions,
+      id: excludingId ? { not: excludingId } : undefined,
+    },
     select: { barcode: true, sku: true },
   });
   if (match?.barcode && match.barcode === input.barcode?.trim()) throw duplicate('A product with this barcode already exists');
   if (match?.sku && match.sku === input.sku?.trim()) throw duplicate('A product with this SKU already exists');
 };
 
-export const createProduct = (input: ProductInput, client?: DbClient, actorId?: string) =>
+export const createProduct = (input: ProductInput, client?: DbClient, actorId?: string, shopId?: string) =>
   withTransaction(client, async (tx) => {
-    const data = productData(input);
-    await validateRelations(tx, input);
-    await validateProductCodes(tx, input);
+    const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
+    const data = productData(input, targetShopId);
+    await validateRelations(tx, input, targetShopId);
+    await validateProductCodes(tx, input, targetShopId);
     const product = await tx.product.create({ data });
     await auditProduct(tx, 'PRODUCT_CREATED', product, actorId);
     return product;
   });
 
-export const updateProduct = async (id: string, input: Partial<ProductInput>, client?: DbClient, actorId?: string) => {
+export const updateProduct = async (id: string, input: Partial<ProductInput>, client?: DbClient, actorId?: string, shopId?: string) => {
   if (!id) throw invalid('Product ID is required');
   validateProduct({ name: 'existing', ...input });
   return withTransaction(client, async (tx) => {
-    const existing = await tx.product.findUnique({ where: { id } });
-    if (!existing) throw missing('Product');
+    const existing = tx.product.findUnique
+      ? await tx.product.findUnique({ where: { id } })
+      : await tx.product.findFirst({ where: { id } });
+    if (!existing || (shopId && existing.shopId && existing.shopId !== shopId)) {
+      throw missing('Product');
+    }
+    const targetShopId = shopId || existing.shopId;
     const mergedMin = input.minStock ?? existing.minStock;
     const mergedMax = input.maxStock === undefined ? existing.maxStock : input.maxStock;
     if (mergedMax !== null && mergedMax < mergedMin) throw invalid('Maximum stock cannot be below minimum stock');
-    await validateRelations(tx, input);
-    await validateProductCodes(tx, input, id);
+    await validateRelations(tx, input, targetShopId);
+    await validateProductCodes(tx, input, targetShopId, id);
     const data: PrismaTypes.ProductUncheckedUpdateInput = {};
     for (const key of ['name', 'genericName', 'brand', 'barcode', 'sku', 'hsn', 'rackLocation'] as const) {
       const value = input[key];
@@ -165,15 +183,15 @@ export const updateProduct = async (id: string, input: Partial<ProductInput>, cl
     for (const key of ['minStock', 'maxStock', 'reorderLevel', 'active', 'supplierId', 'categoryId'] as const) {
       if (input[key] !== undefined) data[key] = input[key] as never;
     }
-    const product = await tx.product.update({ where: { id }, data });
+    const product = await tx.product.update({ where: { id: existing.id }, data });
     await auditProduct(tx, 'PRODUCT_UPDATED', product, actorId, existing);
     return product;
   });
 };
 
-export const getProduct = async (id: string, client?: DbClient) => {
-  const product = await database(client).product.findUnique({
-    where: { id },
+export const getProduct = async (id: string, client?: DbClient, shopId?: string) => {
+  const product = await database(client).product.findFirst({
+    where: { id, ...(shopId ? { shopId } : {}) },
     include: { category: true, supplier: true, batches: { orderBy: { expiryDate: 'asc' } } },
   });
   if (!product) throw missing('Product');
@@ -181,6 +199,7 @@ export const getProduct = async (id: string, client?: DbClient) => {
 };
 
 export type ProductListFilters = {
+  shopId?: string;
   search?: string;
   categoryId?: string;
   active?: boolean;
@@ -188,17 +207,19 @@ export type ProductListFilters = {
   pageSize?: number;
 };
 
-export const listProducts = (search?: string, client?: DbClient) =>
-  listProductsPage({ search }, client).then((result) => result.items);
+export const listProducts = (search?: string, client?: DbClient, shopId?: string) =>
+  listProductsPage({ search, shopId }, client).then((result) => result.items);
 
 export const listProductsPage = async (filters: ProductListFilters = {}, client?: DbClient) => {
   const query = filters.search?.trim();
   const page = filters.page ?? 1;
   const pageSize = filters.pageSize ?? 50;
+  const shopId = filters.shopId || 'default-shop-pharmora';
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
     throw invalid('Invalid pagination values');
   }
   const where: PrismaTypes.ProductWhereInput = {
+    shopId,
     categoryId: filters.categoryId,
     active: filters.active,
     OR: query
@@ -225,13 +246,17 @@ export const listProductsPage = async (filters: ProductListFilters = {}, client?
   return { items, pagination: { page, pageSize, total, pages: Math.ceil(total / pageSize) } };
 };
 
-export const setProductActive = async (id: string, active: boolean, client?: DbClient, actorId?: string) => {
+export const setProductActive = async (id: string, active: boolean, client?: DbClient, actorId?: string, shopId?: string) => {
   if (typeof active !== 'boolean') throw invalid('Active must be a boolean');
   return withTransaction(client, async (tx) => {
-    const existing = await tx.product.findUnique({ where: { id } });
-    if (!existing) throw missing('Product');
+    const existing = tx.product.findUnique
+      ? await tx.product.findUnique({ where: { id } })
+      : await tx.product.findFirst({ where: { id } });
+    if (!existing || (shopId && existing.shopId && existing.shopId !== shopId)) {
+      throw missing('Product');
+    }
     if (existing.active === active) return existing;
-    const product = await tx.product.update({ where: { id }, data: { active } });
+    const product = await tx.product.update({ where: { id: existing.id }, data: { active } });
     await auditProduct(tx, active ? 'PRODUCT_ACTIVATED' : 'PRODUCT_DEACTIVATED', product, actorId, existing);
     return product;
   });

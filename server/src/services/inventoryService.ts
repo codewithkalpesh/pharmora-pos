@@ -15,6 +15,7 @@ import {
 } from './inventoryMath.js';
 
 export type InventoryFilters = {
+  shopId?: string;
   search?: string;
   categoryId?: string;
   active?: boolean;
@@ -26,6 +27,7 @@ export type InventoryFilters = {
 };
 
 export type StockAdjustmentInput = {
+  shopId?: string;
   productId: string;
   batchId?: string;
   quantityChange: number;
@@ -87,7 +89,9 @@ const productStock = (product: {
 
 const buildProductWhere = (filters: InventoryFilters): Prisma.ProductWhereInput => {
   const query = filters.search?.trim();
+  const shopId = filters.shopId || 'default-shop-pharmora';
   return {
+    shopId,
     categoryId: filters.categoryId,
     active: filters.active,
     OR: query ? [
@@ -100,15 +104,19 @@ const buildProductWhere = (filters: InventoryFilters): Prisma.ProductWhereInput 
   };
 };
 
-export const getInventoryList = async (filters: InventoryFilters = {}, client?: DbClient) => {
+export const getInventoryList = async (filters: InventoryFilters = {}, client?: DbClient, shopId?: string) => {
   const page = filters.page ?? 1;
   const pageSize = filters.pageSize ?? 50;
   if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
     throw invalid('Invalid pagination values');
   }
-  const businessDate = filters.businessDate ? normalizeInventoryDate(filters.businessDate) : normalizeInventoryDate(new Date());
+  const effectiveFilters: InventoryFilters = {
+    ...filters,
+    shopId: shopId || filters.shopId || 'default-shop-pharmora',
+  };
+  const businessDate = effectiveFilters.businessDate ? normalizeInventoryDate(effectiveFilters.businessDate) : normalizeInventoryDate(new Date());
   const db = database(client);
-  const where = buildProductWhere(filters);
+  const where = buildProductWhere(effectiveFilters);
   const [products, total] = await Promise.all([
     db.product.findMany({ where, include: { category: true, batches: { orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }] } }, orderBy: { name: 'asc' } }),
     db.product.count({ where }),
@@ -127,21 +135,22 @@ export const getInventoryList = async (filters: InventoryFilters = {}, client?: 
     };
     return { ...item, stockStatus };
   });
-  if (filters.stockStatus) items = items.filter((item) => item.stockStatus === filters.stockStatus);
-  if (filters.expiryStatus) items = items.filter((item) => item.expiryStatuses.includes(filters.expiryStatus!));
+  if (effectiveFilters.stockStatus) items = items.filter((item) => item.stockStatus === effectiveFilters.stockStatus);
+  if (effectiveFilters.expiryStatus) items = items.filter((item) => item.expiryStatuses.includes(effectiveFilters.expiryStatus!));
   const filteredTotal = items.length;
   return {
     items: items.slice((page - 1) * pageSize, page * pageSize),
-    pagination: { page, pageSize, total: filters.stockStatus || filters.expiryStatus ? filteredTotal : total, pages: Math.ceil((filters.stockStatus || filters.expiryStatus ? filteredTotal : total) / pageSize) },
+    pagination: { page, pageSize, total: effectiveFilters.stockStatus || effectiveFilters.expiryStatus ? filteredTotal : total, pages: Math.ceil((effectiveFilters.stockStatus || effectiveFilters.expiryStatus ? filteredTotal : total) / pageSize) },
     businessDate: businessDate.toISOString().slice(0, 10),
     stockSource: 'PRODUCT_BATCH_QUANTITY' as const,
   };
 };
 
-export const getProductStockSummary = async (productId: string, businessDate: Date | string = new Date(), client?: DbClient) => {
+export const getProductStockSummary = async (productId: string, businessDate: Date | string = new Date(), client?: DbClient, shopId?: string) => {
   const db = database(client);
-  const product = await db.product.findUnique({
-    where: { id: productId },
+  const targetShopId = shopId || 'default-shop-pharmora';
+  const product = await db.product.findFirst({
+    where: { id: productId, shopId: targetShopId },
     include: {
       category: true,
       batches: { orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }] },
@@ -160,18 +169,19 @@ export const getProductStockSummary = async (productId: string, businessDate: Da
   };
 };
 
-export const getLowStockProducts = async (filters: Omit<InventoryFilters, 'stockStatus' | 'expiryStatus'> = {}, client?: DbClient) =>
-  getInventoryList({ ...filters, stockStatus: 'LOW_STOCK' }, client);
+export const getLowStockProducts = async (filters: Omit<InventoryFilters, 'stockStatus' | 'expiryStatus'> = {}, client?: DbClient, shopId?: string) =>
+  getInventoryList({ ...filters, stockStatus: 'LOW_STOCK' }, client, shopId);
 
-export const getOutOfStockProducts = async (filters: Omit<InventoryFilters, 'stockStatus' | 'expiryStatus'> = {}, client?: DbClient) =>
-  getInventoryList({ ...filters, stockStatus: 'OUT_OF_STOCK' }, client);
+export const getOutOfStockProducts = async (filters: Omit<InventoryFilters, 'stockStatus' | 'expiryStatus'> = {}, client?: DbClient, shopId?: string) =>
+  getInventoryList({ ...filters, stockStatus: 'OUT_OF_STOCK' }, client, shopId);
 
-export const getExpiryInventory = async (bucket: ExpiryBucket, filters: Omit<InventoryFilters, 'expiryStatus'> = {}, client?: DbClient) =>
-  getInventoryList({ ...filters, expiryStatus: bucket }, client);
+export const getExpiryInventory = async (bucket: ExpiryBucket, filters: Omit<InventoryFilters, 'expiryStatus'> = {}, client?: DbClient, shopId?: string) =>
+  getInventoryList({ ...filters, expiryStatus: bucket }, client, shopId);
 
-export const getFefoBatchAvailability = async (productId: string, quantity?: number, businessDate: Date | string = new Date(), client?: DbClient) => {
-  const product = await database(client).product.findUnique({
-    where: { id: productId },
+export const getFefoBatchAvailability = async (productId: string, quantity?: number, businessDate: Date | string = new Date(), client?: DbClient, shopId?: string) => {
+  const targetShopId = shopId || 'default-shop-pharmora';
+  const product = await database(client).product.findFirst({
+    where: { id: productId, shopId: targetShopId },
     include: { batches: { orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }] } },
   });
   if (!product) throw missing('Product');
@@ -187,8 +197,10 @@ const stockAudit = (
   tx: Prisma.TransactionClient,
   input: StockAdjustmentInput,
   values: { beforeQty: number; afterQty: number; movementIds: string[]; batchId: string | null },
+  shopId: string,
 ) => tx.auditLog.create({
   data: {
+    shopId,
     userId: input.actorId,
     action: 'STOCK_ADJUSTED',
     entityType: 'Product',
@@ -209,11 +221,12 @@ const stockAudit = (
   },
 });
 
-export const adjustInventoryStock = async (input: StockAdjustmentInput, client?: DbClient) => {
+export const adjustInventoryStock = async (input: StockAdjustmentInput, client?: DbClient, shopId?: string) => {
   if (!Number.isInteger(input.quantityChange) || input.quantityChange === 0) throw invalid('Stock adjustment must be a non-zero whole number');
   if (!input.note.trim()) throw invalid('A note is required for stock adjustments');
   if (!input.actorId) throw invalid('An authenticated actor is required for stock adjustments');
   const key = idempotencyKey(input.idempotencyKey);
+  const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
   return withTransaction(client, async (tx) => {
     const previous = await tx.auditLog.findFirst({ where: { action: 'STOCK_ADJUSTED', entityType: 'Product', newValue: { path: ['idempotencyKey'], equals: key } } });
     if (previous) {
@@ -229,7 +242,7 @@ export const adjustInventoryStock = async (input: StockAdjustmentInput, client?:
         batchId: value.batchId,
       };
     }
-    const product = await tx.product.findUnique({ where: { id: input.productId }, include: { batches: true } });
+    const product = await tx.product.findFirst({ where: { id: input.productId, shopId: targetShopId }, include: { batches: true } });
     if (!product) throw missing('Product');
     if (!product.active) throw ruleViolation('Inactive products cannot receive stock adjustments');
     const beforeQty = product.batches.reduce((sum, batch) => sum + batch.quantity, 0);
@@ -266,6 +279,7 @@ export const adjustInventoryStock = async (input: StockAdjustmentInput, client?:
       const generatedBatchNumber = `ADJ-${randomUUID()}`;
       const batch = await tx.productBatch.create({
         data: {
+          shopId: targetShopId,
           productId: product.id,
           batchNumber: generatedBatchNumber,
           purchaseRate: product.purchasePrice ?? new Prisma.Decimal(0),
@@ -327,9 +341,9 @@ export const adjustInventoryStock = async (input: StockAdjustmentInput, client?:
       }
     }
 
-    const afterBatches = await tx.productBatch.findMany({ where: { productId: product.id }, select: { quantity: true } });
+    const afterBatches = await tx.productBatch.findMany({ where: { productId: product.id, shopId: targetShopId }, select: { quantity: true } });
     const afterQty = afterBatches.reduce((sum, batch) => sum + batch.quantity, 0);
-    const audit = await stockAudit(tx, input, { beforeQty, afterQty, movementIds, batchId: adjustedBatchId });
+    const audit = await stockAudit(tx, input, { beforeQty, afterQty, movementIds, batchId: adjustedBatchId }, targetShopId);
     return { audit, movementIds, beforeQty, afterQty, batchId: adjustedBatchId };
   });
 };

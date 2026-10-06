@@ -14,7 +14,6 @@ export const formatWhatsAppPhoneNumber = (phoneNumber?: string | null): string |
   if (!phoneNumber) return null;
   const digits = phoneNumber.replace(/\D/g, '');
   if (!digits) return null;
-  // If 10 digits (common standard Indian mobile number), prepend 91
   if (digits.length === 10) return `91${digits}`;
   return digits;
 };
@@ -34,18 +33,28 @@ export const createWhatsAppUrl = (messageText: string, phoneNumber?: string | nu
 export const generateCustomerInvoiceWhatsApp = async (
   saleId: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ): Promise<WhatsAppPayload> => {
   const db = database(client);
-  const sale = await db.sale.findUnique({
-    where: { id: saleId },
-    include: {
-      customer: true,
-      items: { include: { product: true } },
-      credits: true,
-    },
-  });
+  const sale = db.sale.findFirst
+    ? await db.sale.findFirst({
+        where: { id: saleId, shopId },
+        include: {
+          customer: true,
+          items: { include: { product: true } },
+          credits: true,
+        },
+      })
+    : await db.sale.findUnique({
+        where: { id: saleId },
+        include: {
+          customer: true,
+          items: { include: { product: true } },
+          credits: true,
+        },
+      });
 
-  if (!sale) throw missing('Sale');
+  if (!sale || (shopId && (sale as any).shopId && (sale as any).shopId !== shopId)) throw missing('Sale');
 
   const customerName = sale.customer?.name || 'Customer';
   const customerPhone = sale.customer?.phone || null;
@@ -90,20 +99,32 @@ export const generateCustomerInvoiceWhatsApp = async (
 export const generateCustomerPaymentReceiptWhatsApp = async (
   customerPaymentId: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ): Promise<WhatsAppPayload> => {
   const db = database(client);
-  const payment = await db.customerPayment.findUnique({
-    where: { id: customerPaymentId },
-    include: {
-      customer: {
+  const payment = db.customerPayment.findFirst
+    ? await db.customerPayment.findFirst({
+        where: { id: customerPaymentId, shopId },
         include: {
-          customerCredits: true,
+          customer: {
+            include: {
+              customerCredits: true,
+            },
+          },
         },
-      },
-    },
-  });
+      })
+    : await db.customerPayment.findUnique({
+        where: { id: customerPaymentId },
+        include: {
+          customer: {
+            include: {
+              customerCredits: true,
+            },
+          },
+        },
+      });
 
-  if (!payment) throw missing('Customer payment');
+  if (!payment || (shopId && (payment as any).shopId && (payment as any).shopId !== shopId)) throw missing('Customer payment');
 
   const customer = payment.customer;
   const customerName = customer?.name || 'Customer';
@@ -115,7 +136,6 @@ export const generateCustomerPaymentReceiptWhatsApp = async (
     year: 'numeric',
   });
 
-  // Current remaining outstanding
   const remainingDue = customer
     ? round(customer.customerCredits.reduce((sum, c) => sum + Number(c.balanceAmount), 0))
     : 0;
@@ -154,16 +174,24 @@ export const generateCustomerPaymentReceiptWhatsApp = async (
 export const generateCustomerDueReminderWhatsApp = async (
   customerId: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ): Promise<WhatsAppPayload> => {
   const db = database(client);
-  const customer = await db.customer.findUnique({
-    where: { id: customerId },
-    include: {
-      customerCredits: true,
-    },
-  });
+  const customer = db.customer.findFirst
+    ? await db.customer.findFirst({
+        where: { id: customerId, shopId },
+        include: {
+          customerCredits: true,
+        },
+      })
+    : await db.customer.findUnique({
+        where: { id: customerId },
+        include: {
+          customerCredits: true,
+        },
+      });
 
-  if (!customer) throw missing('Customer');
+  if (!customer || (shopId && (customer as any).shopId && (customer as any).shopId !== shopId)) throw missing('Customer');
 
   const customerName = customer.name;
   const customerPhone = customer.phone || null;
@@ -199,21 +227,34 @@ export const generateCustomerDueReminderWhatsApp = async (
 export const generatePurchaseOrderWhatsApp = async (
   purchaseOrderId: string,
   client?: DbClient,
+  shopId = 'default-shop-pharmora',
 ): Promise<WhatsAppPayload> => {
   const db = database(client);
-  const order = await db.purchaseOrder.findUnique({
-    where: { id: purchaseOrderId },
-    include: {
-      supplierRel: true,
-      items: {
+  const order = db.purchaseOrder.findFirst
+    ? await db.purchaseOrder.findFirst({
+        where: { id: purchaseOrderId, shopId },
         include: {
-          product: true,
+          supplierRel: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
         },
-      },
-    },
-  });
+      })
+    : await db.purchaseOrder.findUnique({
+        where: { id: purchaseOrderId },
+        include: {
+          supplierRel: true,
+          items: {
+            include: {
+              product: true,
+            },
+          },
+        },
+      });
 
-  if (!order) throw missing('Purchase order');
+  if (!order || (shopId && (order as any).shopId && (order as any).shopId !== shopId)) throw missing('Purchase order');
 
   const supplierName = order.supplierRel?.name || order.supplier;
   const supplierPhone = order.supplierRel?.phone || null;

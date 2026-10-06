@@ -29,10 +29,12 @@ const DEFAULT_SETTINGS: StoreSettings = {
 
 const round = (num: number) => Math.round(num * 100) / 100;
 
-export const getStoreSettings = async (client?: DbClient): Promise<StoreSettings> => {
+export const getStoreSettings = async (client?: DbClient, shopId = 'default-shop-pharmora'): Promise<StoreSettings> => {
   const db = database(client);
+  const shop = db.shop ? await db.shop.findUnique({ where: { id: shopId } }).catch(() => null) : null;
   const settingsRows = await db.setting.findMany({
     where: {
+      shopId,
       key: {
         in: [
           'STORE_NAME',
@@ -52,21 +54,23 @@ export const getStoreSettings = async (client?: DbClient): Promise<StoreSettings
 
   const map = new Map(settingsRows.map((s) => [s.key, s.value]));
 
+  const shopAddress = [shop?.address, shop?.city, shop?.state, shop?.pincode].filter(Boolean).join(', ');
+
   return {
-    storeName: map.get('STORE_NAME') || DEFAULT_SETTINGS.storeName,
+    storeName: map.get('STORE_NAME') || shop?.name || DEFAULT_SETTINGS.storeName,
     tagline: map.get('STORE_TAGLINE') || DEFAULT_SETTINGS.tagline,
-    address: map.get('STORE_ADDRESS') || DEFAULT_SETTINGS.address,
-    phone: map.get('STORE_PHONE') || DEFAULT_SETTINGS.phone,
-    email: map.get('STORE_EMAIL') || DEFAULT_SETTINGS.email,
-    gstin: map.get('STORE_GSTIN') || DEFAULT_SETTINGS.gstin,
-    dlNumber: map.get('STORE_DL_NUMBER') || DEFAULT_SETTINGS.dlNumber,
+    address: map.get('STORE_ADDRESS') || (shopAddress || DEFAULT_SETTINGS.address),
+    phone: map.get('STORE_PHONE') || shop?.phone || DEFAULT_SETTINGS.phone,
+    email: map.get('STORE_EMAIL') || shop?.email || DEFAULT_SETTINGS.email,
+    gstin: map.get('STORE_GSTIN') || shop?.gstin || DEFAULT_SETTINGS.gstin,
+    dlNumber: map.get('STORE_DL_NUMBER') || shop?.drugLicenseNumber || DEFAULT_SETTINGS.dlNumber,
     fssaiNumber: map.get('STORE_FSSAI_NUMBER') || DEFAULT_SETTINGS.fssaiNumber,
     receiptFooter: map.get('RECEIPT_FOOTER') || DEFAULT_SETTINGS.receiptFooter,
     invoiceTerms: map.get('INVOICE_TERMS') || DEFAULT_SETTINGS.invoiceTerms,
   };
 };
 
-export const updateStoreSettings = async (input: Partial<StoreSettings>, client?: DbClient): Promise<StoreSettings> => {
+export const updateStoreSettings = async (input: Partial<StoreSettings>, client?: DbClient, shopId = 'default-shop-pharmora'): Promise<StoreSettings> => {
   const db = database(client);
   const updates: Array<{ key: string; value: string }> = [];
 
@@ -83,13 +87,13 @@ export const updateStoreSettings = async (input: Partial<StoreSettings>, client?
 
   for (const item of updates) {
     await db.setting.upsert({
-      where: { key: item.key },
+      where: { key_shopId: { key: item.key, shopId } },
       update: { value: item.value },
-      create: { key: item.key, value: item.value },
+      create: { key: item.key, value: item.value, shopId },
     });
   }
 
-  return getStoreSettings(client);
+  return getStoreSettings(client, shopId);
 };
 
 export type ReceiptLineItem = {
@@ -158,27 +162,44 @@ export type ReceiptData = {
   };
 };
 
-export const getReceiptData = async (saleId: string, client?: DbClient): Promise<ReceiptData> => {
+export const getReceiptData = async (saleId: string, client?: DbClient, shopId = 'default-shop-pharmora'): Promise<ReceiptData> => {
   const db = database(client);
 
   const [store, sale] = await Promise.all([
-    getStoreSettings(client),
-    db.sale.findUnique({
-      where: { id: saleId },
-      include: {
-        customer: true,
-        createdBy: { select: { id: true, name: true } },
-        items: {
+    getStoreSettings(client, shopId),
+    db.sale.findFirst
+      ? db.sale.findFirst({
+          where: { id: saleId, shopId },
           include: {
-            product: true,
-            batch: true,
+            customer: true,
+            createdBy: { select: { id: true, name: true } },
+            items: {
+              include: {
+                product: true,
+                batch: true,
+              },
+            },
+            payments: {
+              include: { splits: true },
+            },
           },
-        },
-        payments: {
-          include: { splits: true },
-        },
-      },
-    }),
+        })
+      : db.sale.findUnique({
+          where: { id: saleId },
+          include: {
+            customer: true,
+            createdBy: { select: { id: true, name: true } },
+            items: {
+              include: {
+                product: true,
+                batch: true,
+              },
+            },
+            payments: {
+              include: { splits: true },
+            },
+          },
+        }),
   ]);
 
   if (!sale) {
@@ -240,7 +261,6 @@ export const getReceiptData = async (saleId: string, client?: DbClient): Promise
   const paidAmount = round(Number(sale.paidAmount));
   const creditAmount = round(Math.max(0, grandTotal - paidAmount));
 
-  // Determine split payments if present
   let cashAmount: number | undefined;
   let upiAmount: number | undefined;
 
@@ -255,7 +275,6 @@ export const getReceiptData = async (saleId: string, client?: DbClient): Promise
   const customerName = sale.customer?.name || 'Walk-in Customer';
   const customerPhone = sale.customer?.phone || null;
 
-  // Build WhatsApp friendly text
   const waLines = [
     `*${store.storeName}*`,
     `Invoice: *#${invoiceNumber}*`,

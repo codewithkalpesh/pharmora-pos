@@ -5,6 +5,7 @@ import { paymentAccounts } from './transactionUtils.js';
 import { sendExpenseSummary } from './telegramService.js';
 
 export const createExpense = async (input: {
+  shopId?: string;
   category: string;
   amount: number;
   expenseDate?: Date;
@@ -14,7 +15,8 @@ export const createExpense = async (input: {
   description?: string;
   receiptUrl?: string;
   createdById?: string;
-}, key: string, client?: DbClient) => {
+}, key: string, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = input.shopId || shopId;
   const stableKey = idempotencyKey(key);
   if (!input.category?.trim()) throw invalid('Expense category is required');
   nonNegativeAmount(input.amount, 'Expense amount');
@@ -28,6 +30,7 @@ export const createExpense = async (input: {
     const createdExpense = await withTransaction(client, async (tx) => {
       const expense = await tx.expense.create({
         data: {
+          shopId: targetShopId,
           category: input.category.trim(),
           amount: input.amount,
           expenseDate: input.expenseDate ?? new Date(),
@@ -43,6 +46,7 @@ export const createExpense = async (input: {
       });
       for (const [index, account] of accounts.entries()) {
         await writeCashbookEntry(tx, {
+          shopId: targetShopId,
           entryType: 'EXPENSE',
           direction: 'OUT',
           amount: account.amount,
@@ -59,7 +63,7 @@ export const createExpense = async (input: {
 
     if (createdExpense) {
       setImmediate(() => {
-        sendExpenseSummary(createdExpense.id, client, input.createdById).catch(() => {});
+        sendExpenseSummary(createdExpense.id, client, input.createdById, targetShopId).catch(() => {});
       });
     }
 
@@ -74,11 +78,13 @@ export const createExpense = async (input: {
   }
 };
 
-export const listExpenses = (filters: { category?: string; from?: Date; to?: Date } = {}, client?: PrismaClient) => {
+export const listExpenses = (filters: { category?: string; from?: Date; to?: Date; shopId?: string } = {}, client?: PrismaClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   if (filters.from && Number.isNaN(filters.from.getTime())) throw invalid('Start date is invalid');
   if (filters.to && Number.isNaN(filters.to.getTime())) throw invalid('End date is invalid');
   return database(client).expense.findMany({
     where: {
+      shopId: targetShopId,
       category: filters.category,
       expenseDate: filters.from || filters.to ? { gte: filters.from, lte: filters.to } : undefined,
     },
@@ -86,7 +92,12 @@ export const listExpenses = (filters: { category?: string; from?: Date; to?: Dat
   });
 };
 
-export const listExpenseCategories = async (client?: PrismaClient) => {
-  const rows = await database(client).expense.findMany({ distinct: ['category'], select: { category: true }, orderBy: { category: 'asc' } });
+export const listExpenseCategories = async (client?: PrismaClient, shopId = 'default-shop-pharmora') => {
+  const rows = await database(client).expense.findMany({
+    where: { shopId },
+    distinct: ['category'],
+    select: { category: true },
+    orderBy: { category: 'asc' },
+  });
   return rows.map((row) => row.category);
 };

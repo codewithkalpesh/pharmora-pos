@@ -28,6 +28,7 @@ const physicalCashTypes = new Set<CashbookEntryType>([
 ]);
 
 export type CashbookEntryInput = {
+  shopId?: string;
   entryType: CashbookEntryType;
   direction: CashbookDirection;
   amount: MoneyInput;
@@ -84,6 +85,7 @@ const validateEntrySemantics = (input: CashbookEntryInput) => {
 
 const auditEntry = (tx: Prisma.TransactionClient, entry: {
   id: string;
+  shopId: string;
   entryType: CashbookEntryType;
   direction: CashbookDirection;
   amount: PrismaRuntime.Decimal;
@@ -95,6 +97,7 @@ const auditEntry = (tx: Prisma.TransactionClient, entry: {
   createdById: string | null;
 }) => tx.auditLog.create({
   data: {
+    shopId: entry.shopId,
     userId: entry.createdById,
     action: 'CASHBOOK_ENTRY_CREATED',
     entityType: 'CashbookEntry',
@@ -113,11 +116,11 @@ const auditEntry = (tx: Prisma.TransactionClient, entry: {
   },
 });
 
-const bankBalanceFor = async (tx: Prisma.TransactionClient, accountId: string) => {
-  const account = await tx.bankAccount.findUnique({ where: { id: accountId } });
+const bankBalanceFor = async (tx: Prisma.TransactionClient, accountId: string, shopId = 'default-shop-pharmora') => {
+  const account = await tx.bankAccount.findFirst({ where: { id: accountId, shopId } });
   if (!account) throw missing('Bank account');
   const transactions = await tx.bankTransaction.findMany({
-    where: { bankAccountId: accountId },
+    where: { bankAccountId: accountId, shopId },
     select: { transactionType: true, amount: true },
   });
   return transactions.reduce((balance, transaction) => {
@@ -127,6 +130,7 @@ const bankBalanceFor = async (tx: Prisma.TransactionClient, accountId: string) =
 };
 
 export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: CashbookEntryInput) => {
+  const targetShopId = input.shopId || 'default-shop-pharmora';
   validateEntrySemantics(input);
   const amount = input.entryType === 'OPENING_CASH'
     ? nonNegativeMoney(input.amount)
@@ -146,15 +150,20 @@ export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: Ca
     return existing;
   }
 
-  if (await tx.dailyClosing.findUnique({ where: { closingDate: businessDate }, select: { id: true } })) {
+  const isClosed = tx.dailyClosing?.findFirst
+    ? await tx.dailyClosing.findFirst({ where: { closingDate: businessDate, shopId: targetShopId }, select: { id: true } })
+    : (tx.dailyClosing?.findUnique ? await (tx.dailyClosing.findUnique as any)({ where: { closingDate_shopId: { closingDate: businessDate, shopId: targetShopId } } }) : null);
+  if (isClosed) {
     throw ruleViolation('This business date is already closed; record a correction on an open business date');
   }
 
   let bankPosting: { accountId: string; balanceAfter: PrismaRuntime.Decimal; transactionType: 'CREDIT' | 'DEBIT' } | undefined;
   if (input.paymentMethod === 'BANK') {
-    const account = await tx.bankAccount.findFirst({ where: { isActive: true }, orderBy: { isPrimary: 'desc' } });
+    const account = tx.bankAccount?.findFirst
+      ? await tx.bankAccount.findFirst({ where: { isActive: true, shopId: targetShopId }, orderBy: { isPrimary: 'desc' } })
+      : (tx.bankAccount?.findUnique ? await tx.bankAccount.findUnique({ where: { id: 'primary' } }) : null);
     if (!account) throw ruleViolation('An active bank account is required for bank transactions');
-    const current = await bankBalanceFor(tx, account.id);
+    const current = await bankBalanceFor(tx, account.id, targetShopId);
     const balanceAfter = input.direction === 'IN' ? current.plus(amount) : current.minus(amount);
     if (balanceAfter.isNegative()) throw ruleViolation('Insufficient bank balance');
     bankPosting = { accountId: account.id, balanceAfter, transactionType: input.direction === 'IN' ? 'CREDIT' : 'DEBIT' };
@@ -163,6 +172,7 @@ export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: Ca
   const notes = input.description?.trim() || input.notes?.trim() || null;
   const entry = await tx.cashbookEntry.create({
     data: {
+      shopId: targetShopId,
       entryType: input.entryType,
       direction: input.direction,
       amount,
@@ -182,6 +192,7 @@ export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: Ca
   if (bankPosting) {
     await tx.bankTransaction.create({
       data: {
+        shopId: targetShopId,
         bankAccountId: bankPosting.accountId,
         transactionType: bankPosting.transactionType,
         amount,
@@ -192,7 +203,11 @@ export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: Ca
         createdById: input.createdById,
       },
     });
-    await tx.bankAccount.update({ where: { id: bankPosting.accountId }, data: { currentBalance: bankPosting.balanceAfter } });
+    if (tx.bankAccount?.updateMany) {
+      await tx.bankAccount.updateMany({ where: { id: bankPosting.accountId, shopId: targetShopId }, data: { currentBalance: bankPosting.balanceAfter } });
+    } else if (tx.bankAccount?.update) {
+      await tx.bankAccount.update({ where: { id: bankPosting.accountId }, data: { currentBalance: bankPosting.balanceAfter } });
+    }
   }
 
   await auditEntry(tx, entry);
@@ -202,19 +217,30 @@ export const writeCashbookEntry = async (tx: Prisma.TransactionClient, input: Ca
 export const createCashbookEntry = (input: CashbookEntryInput, client?: DbClient) =>
   withTransaction(client, (tx) => writeCashbookEntry(tx, input));
 
-const getOpeningCashState = async (client: DbClient, businessDate: Date) => {
+const getOpeningCashState = async (client: DbClient, businessDate: Date, shopId = 'default-shop-pharmora') => {
   const priorDate = new Date(businessDate);
   priorDate.setUTCDate(priorDate.getUTCDate() - 1);
-  const previousClosing = await client.dailyClosing.findUnique({
-    where: { closingDate: priorDate },
-    select: { id: true, closingDate: true, actualCash: true },
-  });
-  const baseline = previousClosing ? null : await client.cashbookEntry.findFirst({
-    where: { businessDate, entryType: 'OPENING_CASH', paymentMethod: 'CASH' },
-    orderBy: { createdAt: 'asc' },
-  });
+  const previousClosing = client.dailyClosing?.findFirst
+    ? await client.dailyClosing.findFirst({
+        where: { closingDate: priorDate, shopId },
+        select: { id: true, closingDate: true, actualCash: true },
+      })
+    : (client.dailyClosing?.findUnique
+        ? await (client.dailyClosing.findUnique as any)({
+            where: { closingDate_shopId: { closingDate: priorDate, shopId } },
+            select: { id: true, closingDate: true, actualCash: true },
+          })
+        : null);
+  const baseline = previousClosing
+    ? null
+    : (client.cashbookEntry?.findFirst
+        ? await client.cashbookEntry.findFirst({
+            where: { businessDate, entryType: 'OPENING_CASH', paymentMethod: 'CASH', shopId },
+            orderBy: { createdAt: 'asc' },
+          })
+        : null);
   const corrections = await client.cashbookEntry.findMany({
-    where: { businessDate, entryType: 'OPENING_CASH_CORRECTION', paymentMethod: 'CASH' },
+    where: { businessDate, entryType: 'OPENING_CASH_CORRECTION', paymentMethod: 'CASH', shopId },
     select: { direction: true, amount: true },
     orderBy: { createdAt: 'asc' },
   });
@@ -228,9 +254,9 @@ const getOpeningCashState = async (client: DbClient, businessDate: Date) => {
   };
 };
 
-export const getOpeningCash = async (date: Date | string, client?: DbClient) => {
+export const getOpeningCash = async (date: Date | string, client?: DbClient, shopId = 'default-shop-pharmora') => {
   const businessDate = normalizeBusinessDate(date);
-  const result = await getOpeningCashState(database(client), businessDate);
+  const result = await getOpeningCashState(database(client), businessDate, shopId);
   return {
     businessDate: businessDateKey(businessDate),
     openingCash: moneyString(result.amount),
@@ -241,12 +267,14 @@ export const getOpeningCash = async (date: Date | string, client?: DbClient) => 
 };
 
 export const setOpeningCash = async (input: {
+  shopId?: string;
   businessDate: Date | string;
   amount: MoneyInput;
   reason?: string;
   idempotencyKey: string;
   createdById?: string;
-}, client?: DbClient) => {
+}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = input.shopId || shopId;
   const businessDate = normalizeBusinessDate(input.businessDate);
   const targetAmount = nonNegativeMoney(input.amount, 'Opening cash');
   const key = idempotencyKey(input.idempotencyKey);
@@ -256,16 +284,20 @@ export const setOpeningCash = async (input: {
       if (!openingTypes.has(repeated.entryType) || repeated.businessDate.getTime() !== businessDate.getTime()) {
         throw duplicate('Idempotency key was already used for a different financial operation');
       }
-      const current = await getOpeningCashState(tx, businessDate);
+      const current = await getOpeningCashState(tx, businessDate, targetShopId);
       if (!current.amount.equals(targetAmount)) throw duplicate('Idempotency key was already used for a different opening cash value');
-      return getOpeningCash(businessDate, tx);
+      return getOpeningCash(businessDate, tx, targetShopId);
     }
-    if (await tx.dailyClosing.findUnique({ where: { closingDate: businessDate }, select: { id: true } })) {
+    const isClosed = tx.dailyClosing?.findFirst
+      ? await tx.dailyClosing.findFirst({ where: { closingDate: businessDate, shopId: targetShopId }, select: { id: true } })
+      : (tx.dailyClosing?.findUnique ? await (tx.dailyClosing.findUnique as any)({ where: { closingDate_shopId: { closingDate: businessDate, shopId: targetShopId } } }) : null);
+    if (isClosed) {
       throw ruleViolation('Opening cash cannot be changed after the day has been closed');
     }
-    const current = await getOpeningCashState(tx, businessDate);
+    const current = await getOpeningCashState(tx, businessDate, targetShopId);
     if (!current.isSet) {
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'OPENING_CASH',
         direction: 'IN',
         amount: targetAmount,
@@ -281,6 +313,7 @@ export const setOpeningCash = async (input: {
       if (!input.reason?.trim()) throw invalid('A reason is required to correct opening cash');
       const difference = targetAmount.minus(current.amount);
       await writeCashbookEntry(tx, {
+        shopId: targetShopId,
         entryType: 'OPENING_CASH_CORRECTION',
         direction: difference.isPositive() ? 'IN' : 'OUT',
         amount: difference.abs(),
@@ -293,20 +326,22 @@ export const setOpeningCash = async (input: {
         idempotencyKey: key,
       });
     }
-    return getOpeningCash(businessDate, tx);
+    return getOpeningCash(businessDate, tx, targetShopId);
   });
 };
 
-export const getDailyCashSummary = async (date: Date | string, client?: DbClient) => {
+export const getDailyCashSummary = async (date: Date | string, client?: DbClient, shopId = 'default-shop-pharmora') => {
   const businessDate = normalizeBusinessDate(date);
   const db = database(client);
-  const opening = await getOpeningCashState(db, businessDate);
+  const opening = await getOpeningCashState(db, businessDate, shopId);
   const entries = await db.cashbookEntry.findMany({
-    where: { businessDate: { gte: businessDate, lt: nextBusinessDate(businessDate) } },
+    where: { shopId, businessDate: { gte: businessDate, lt: nextBusinessDate(businessDate) } },
     orderBy: { createdAt: 'desc' },
   });
   const totals = calculateDrawerTotals(opening.amount, entries);
-  const closing = await db.dailyClosing.findUnique({ where: { closingDate: businessDate } });
+  const closing = db.dailyClosing?.findFirst
+    ? await db.dailyClosing.findFirst({ where: { closingDate: businessDate, shopId } })
+    : (db.dailyClosing?.findUnique ? await (db.dailyClosing.findUnique as any)({ where: { closingDate_shopId: { closingDate: businessDate, shopId } } }) : null);
   return {
     businessDate: businessDateKey(businessDate),
     openingCash: moneyString(totals.openingCash),
@@ -323,11 +358,13 @@ export const getDailyCashSummary = async (date: Date | string, client?: DbClient
 };
 
 export const listCashbookEntries = async (filters: {
+  shopId?: string;
   date?: Date | string;
   from?: Date | string;
   to?: Date | string;
   paymentMethod?: PaymentMethod;
-} = {}, client?: DbClient) => {
+} = {}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = filters.shopId || shopId;
   let businessDateFilter: Prisma.DateTimeFilter<'CashbookEntry'> | undefined;
   if (filters.date) {
     const date = normalizeBusinessDate(filters.date);
@@ -339,34 +376,42 @@ export const listCashbookEntries = async (filters: {
     businessDateFilter = { gte: from, lt: to };
   }
   return database(client).cashbookEntry.findMany({
-    where: { businessDate: businessDateFilter, paymentMethod: filters.paymentMethod },
+    where: { shopId: targetShopId, businessDate: businessDateFilter, paymentMethod: filters.paymentMethod },
     include: { createdBy: true },
     orderBy: [{ businessDate: 'desc' }, { createdAt: 'desc' }],
   });
 };
 
-export const getDailyClosing = async (date: Date | string, client?: DbClient) => {
+export const getDailyClosing = async (date: Date | string, client?: DbClient, shopId = 'default-shop-pharmora') => {
   const businessDate = normalizeBusinessDate(date);
-  return database(client).dailyClosing.findUnique({ where: { closingDate: businessDate }, include: { closedBy: true } });
+  const db = database(client);
+  return db.dailyClosing?.findFirst
+    ? db.dailyClosing.findFirst({ where: { closingDate: businessDate, shopId }, include: { closedBy: true } })
+    : (db.dailyClosing?.findUnique ? (db.dailyClosing.findUnique as any)({ where: { closingDate_shopId: { closingDate: businessDate, shopId } }, include: { closedBy: true } }) : null);
 };
 
 export const createDailyClosing = async (input: {
+  shopId?: string;
   businessDate: Date | string;
   actualCash: MoneyInput;
   notes?: string;
   closedById?: string;
-}, client?: DbClient) => {
+}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = input.shopId || shopId;
   const businessDate = normalizeBusinessDate(input.businessDate);
   const actualCash = nonNegativeMoney(input.actualCash, 'Actual cash');
   const createdClosing = await withTransaction(client, async (tx) => {
-    const existing = await tx.dailyClosing.findUnique({ where: { closingDate: businessDate } });
+    const existing = tx.dailyClosing?.findFirst
+      ? await tx.dailyClosing.findFirst({ where: { closingDate: businessDate, shopId: targetShopId } })
+      : (tx.dailyClosing?.findUnique ? await (tx.dailyClosing.findUnique as any)({ where: { closingDate_shopId: { closingDate: businessDate, shopId: targetShopId } } }) : null);
     if (existing) throw duplicate('This business date has already been closed; previous closings are never overwritten');
-    const summary = await getDailyCashSummary(businessDate, tx);
+    const summary = await getDailyCashSummary(businessDate, tx, targetShopId);
     const expectedCash = moneyDecimal(summary.expectedDrawerCash);
     const difference = calculateClosingDifference(actualCash, expectedCash);
     const status = closingStatus(difference);
     const closing = await tx.dailyClosing.create({
       data: {
+        shopId: targetShopId,
         closingDate: businessDate,
         openingCash: summary.openingCash,
         cashInflows: summary.cashInflows,
@@ -382,6 +427,7 @@ export const createDailyClosing = async (input: {
     });
     await tx.auditLog.create({
       data: {
+        shopId: targetShopId,
         userId: input.closedById,
         action: 'DAILY_CLOSING_CREATED',
         entityType: 'DailyClosing',
@@ -405,7 +451,7 @@ export const createDailyClosing = async (input: {
 
   if (createdClosing) {
     setImmediate(() => {
-      sendDailyClosingSummary(createdClosing.closingDate, client, input.closedById).catch(() => {});
+      sendDailyClosingSummary(createdClosing.closingDate, client, input.closedById, targetShopId).catch(() => {});
     });
   }
 
@@ -413,15 +459,18 @@ export const createDailyClosing = async (input: {
 };
 
 export const createAdjustment = async (input: {
+  shopId?: string;
   direction: CashbookDirection;
   amount: MoneyInput;
   businessDate?: Date | string;
   description: string;
   createdById?: string;
   idempotencyKey: string;
-}, client?: DbClient) => {
+}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = input.shopId || shopId;
   if (!input.description.trim()) throw invalid('A reason is required for a cash adjustment');
   return createCashbookEntry({
+    shopId: targetShopId,
     entryType: 'CASH_ADJUSTMENT',
     direction: input.direction,
     amount: input.amount,
@@ -436,13 +485,15 @@ export const createAdjustment = async (input: {
 };
 
 export const transferCashAndBank = async (input: {
+  shopId?: string;
   direction: 'CASH_TO_BANK' | 'BANK_TO_CASH';
   amount: MoneyInput;
   businessDate?: Date | string;
   description?: string;
   createdById?: string;
   idempotencyKey: string;
-}, client?: DbClient) => {
+}, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const targetShopId = input.shopId || shopId;
   const amount = positiveMoney(input.amount);
   const key = idempotencyKey(input.idempotencyKey);
   const entryPrefix = key.slice(0, 120);
@@ -451,13 +502,14 @@ export const transferCashAndBank = async (input: {
     const existing = await tx.cashbookEntry.findUnique({ where: { idempotencyKey: `${entryPrefix}:cash` } });
     if (existing) {
       return tx.cashbookEntry.findMany({
-        where: { sourceType: 'BANK_TRANSFER', sourceId: key },
+        where: { sourceType: 'BANK_TRANSFER', sourceId: key, shopId: targetShopId },
         orderBy: { createdAt: 'asc' },
       });
     }
     const cashToBank = input.direction === 'CASH_TO_BANK';
     const type: CashbookEntryType = cashToBank ? 'BANK_DEPOSIT' : 'BANK_TO_CASH';
     const cashEntry = await writeCashbookEntry(tx, {
+      shopId: targetShopId,
       entryType: type,
       direction: cashToBank ? 'OUT' : 'IN',
       amount,
@@ -470,6 +522,7 @@ export const transferCashAndBank = async (input: {
       idempotencyKey: `${entryPrefix}:cash`,
     });
     const bankEntry = await writeCashbookEntry(tx, {
+      shopId: targetShopId,
       entryType: type,
       direction: cashToBank ? 'IN' : 'OUT',
       amount,
@@ -485,15 +538,15 @@ export const transferCashAndBank = async (input: {
   });
 };
 
-export const getCurrentCashPosition = async (client?: DbClient) => {
+export const getCurrentCashPosition = async (client?: DbClient, shopId = 'default-shop-pharmora') => {
   const db = database(client);
   const today = normalizeBusinessDate(new Date());
-  const summary = await getDailyCashSummary(today, db);
-  const bankAccounts = await db.bankAccount.findMany({ where: { isActive: true }, select: { id: true, openingBalance: true } });
+  const summary = await getDailyCashSummary(today, db, shopId);
+  const bankAccounts = await db.bankAccount.findMany({ where: { isActive: true, shopId }, select: { id: true, openingBalance: true } });
   let bank = new PrismaRuntime.Decimal(0);
-  for (const account of bankAccounts) bank = bank.plus(await bankBalanceFor(db as Prisma.TransactionClient, account.id));
+  for (const account of bankAccounts) bank = bank.plus(await bankBalanceFor(db as Prisma.TransactionClient, account.id, shopId));
   const upiEntries = await db.cashbookEntry.findMany({
-    where: { paymentMethod: 'UPI' },
+    where: { paymentMethod: 'UPI', shopId },
     select: { direction: true, amount: true },
   });
   const upi = upiEntries.reduce((balance, entry) => {
@@ -511,8 +564,8 @@ export const getCurrentCashPosition = async (client?: DbClient) => {
 
 export const getCashbookBalances = getCurrentCashPosition;
 
-export const getCashbookEntry = async (id: string, client?: DbClient) => {
-  const entry = await database(client).cashbookEntry.findUnique({ where: { id }, include: { createdBy: true } });
+export const getCashbookEntry = async (id: string, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const entry = await database(client).cashbookEntry.findFirst({ where: { id, shopId }, include: { createdBy: true } });
   if (!entry) throw missing('Cashbook entry');
   return entry;
 };

@@ -14,6 +14,7 @@ export type SaleLineInput = {
 };
 
 export type SaleInput = {
+  shopId?: string;
   saleNumber?: string;
   customerId?: string;
   items: SaleLineInput[];
@@ -33,8 +34,9 @@ export const calculateSaleTotal = (items: SaleLineInput[]) => {
   }, 0) * 100) / 100;
 };
 
-export const createSale = async (input: SaleInput, key: string, client?: DbClient) => {
+export const createSale = async (input: SaleInput, key: string, client?: DbClient, shopId?: string) => {
   const stableKey = idempotencyKey(key);
+  const targetShopId = shopId || input.shopId || 'default-shop-pharmora';
   if (!['CASH', 'UPI', 'BOTH', 'CREDIT'].includes(input.paymentMethod)) throw invalid('Sale payment method must be CASH, UPI, BOTH, or CREDIT');
   if (input.paymentMethod === 'CREDIT') {
     if (!input.customerId || input.cashAmount !== undefined || input.upiAmount !== undefined) {
@@ -52,17 +54,24 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
   if (prior) return prior;
   try {
     return await withTransaction(client, async (tx) => {
-      if (input.customerId && !(await tx.customer.findUnique({ where: { id: input.customerId }, select: { id: true } }))) {
-        throw missing('Customer');
+      if (input.customerId) {
+        const hasCustomer = tx.customer.findFirst
+          ? await tx.customer.findFirst({ where: { id: input.customerId, shopId: targetShopId }, select: { id: true } })
+          : await tx.customer.findUnique({ where: { id: input.customerId } });
+        if (!hasCustomer) throw missing('Customer');
       }
 
       const selectedLines: Array<{ line: SaleLineInput; batch: ProductBatch; product: Pick<Product, 'sellingPrice' | 'gst'>; lineIndex: number; discount: number }> = [];
       for (const [lineIndex, line] of input.items.entries()) {
         if (!line.productId) throw invalid('Sale item product is required');
-        const product = await tx.product.findUnique({ where: { id: line.productId }, select: { id: true, name: true, active: true, sellingPrice: true, gst: true } });
+        const product = tx.product.findFirst
+          ? await tx.product.findFirst({ where: { id: line.productId, shopId: targetShopId }, select: { id: true, name: true, active: true, sellingPrice: true, gst: true } })
+          : await tx.product.findUnique({ where: { id: line.productId } });
         if (!product || !product.active) throw missing('Active product');
         if (line.batchId) {
-          const batch = await tx.productBatch.findUnique({ where: { id: line.batchId } });
+          const batch = tx.productBatch.findFirst
+            ? await tx.productBatch.findFirst({ where: { id: line.batchId, shopId: targetShopId } })
+            : await tx.productBatch.findUnique({ where: { id: line.batchId } });
           if (!batch || batch.productId !== line.productId) throw missing('Product batch');
           if (batch.expiryDate && batch.expiryDate < new Date()) throw ruleViolation('Expired batches cannot be sold');
           if (batch.quantity < line.quantity) throw ruleViolation('Insufficient stock in selected batch');
@@ -70,7 +79,7 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
         } else {
           let remaining = line.quantity;
           const batches = await tx.productBatch.findMany({
-            where: { productId: line.productId, quantity: { gt: 0 }, OR: [{ expiryDate: null }, { expiryDate: { gte: new Date() } }] },
+            where: { productId: line.productId, shopId: targetShopId, quantity: { gt: 0 }, OR: [{ expiryDate: null }, { expiryDate: { gte: new Date() } }] },
             orderBy: [{ expiryDate: 'asc' }, { createdAt: 'asc' }],
           });
           for (const batch of batches) {
@@ -132,6 +141,7 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
 
       const sale = await tx.sale.create({
         data: {
+          shopId: targetShopId,
           saleNumber,
           customerId: input.customerId,
           paymentMethod: input.paymentMethod,
@@ -165,6 +175,7 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
       if (creditAmount > 0) {
         await tx.customerCredit.create({
           data: {
+            shopId: targetShopId,
             customerId: input.customerId!,
             saleId: sale.id,
             description: `Sale ${sale.saleNumber ?? sale.id}`,
@@ -184,6 +195,7 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
 
       if (paidAmount > 0) {
         await createSalePayment(tx, {
+          shopId: targetShopId,
           saleId: sale.id,
           amount: paidAmount,
           paymentMethod: input.paymentMethod,
@@ -197,6 +209,7 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
       if (tx.auditLog?.create) {
         await tx.auditLog.create({
           data: {
+            shopId: targetShopId,
             userId: input.createdById,
             action: 'SALE_CREATED',
             entityType: 'Sale',
@@ -232,15 +245,26 @@ export const createSale = async (input: SaleInput, key: string, client?: DbClien
   }
 };
 
-export const listSales = (client?: DbClient) =>
-  database(client).sale.findMany({ include: { customer: true, items: { include: { product: true, batch: true } }, payments: true }, orderBy: { saleDate: 'desc' } });
-
-export const getSale = async (id: string, client?: DbClient) => {
-  const sale = await database(client).sale.findUnique({
-    where: { id },
-    include: { customer: true, items: { include: { product: true, batch: true } }, payments: { include: { splits: true } } },
+export const listSales = (client?: DbClient, shopId?: string) => {
+  const targetShopId = shopId || 'default-shop-pharmora';
+  return database(client).sale.findMany({
+    where: { shopId: targetShopId },
+    include: { customer: true, items: { include: { product: true, batch: true } }, payments: true },
+    orderBy: { saleDate: 'desc' },
   });
+};
+
+export const getSale = async (id: string, client?: DbClient, shopId?: string) => {
+  const db = database(client);
+  const sale = db.sale.findFirst
+    ? await db.sale.findFirst({
+        where: { id, ...(shopId ? { shopId } : {}) },
+        include: { customer: true, items: { include: { product: true, batch: true } }, payments: { include: { splits: true } } },
+      })
+    : await db.sale.findUnique({
+        where: { id },
+        include: { customer: true, items: { include: { product: true, batch: true } }, payments: { include: { splits: true } } },
+      });
   if (!sale) throw missing('Sale');
   return sale;
 };
-

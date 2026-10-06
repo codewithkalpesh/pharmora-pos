@@ -16,7 +16,7 @@ import {
   type DbClient,
 } from './domainUtils.js';
 import { lineTotal, paymentAccounts } from './transactionUtils.js';
-import { sendPurchaseSummary } from './telegramService.js';
+import { sendPurchaseNotification } from './telegramService.js';
 
 export type PurchaseLineInput = {
   productId: string;
@@ -32,6 +32,7 @@ export type PurchaseLineInput = {
 };
 
 export type PurchaseInput = {
+  shopId?: string;
   supplierId: string;
   invoiceNumber: string;
   invoiceDate: Date;
@@ -44,229 +45,280 @@ export type PurchaseInput = {
   createdById?: string;
 };
 
-export const calculatePurchaseTotal = (items: PurchaseLineInput[]) => {
-  if (!items || !items.length) throw invalid('Purchase must contain at least one item');
-  return Math.round(items.reduce((total, item) => {
-    positiveQuantity(item.quantity);
-    nonNegativeQuantity(item.freeQty ?? 0, 'Free quantity');
-    nonNegativeAmount(item.purchaseRate, 'Purchase rate');
-    return total + lineTotal(item.quantity, item.purchaseRate, item.discount ?? 0, item.gst ?? 0);
-  }, 0) * 100) / 100;
+export const calculatePurchaseTotal = (items: Array<{ quantity: number; purchaseRate: number; discount?: number; gst?: number }>) => {
+  if (!items || items.length === 0) throw invalid('Purchase requires at least one item');
+  return items.reduce((sum, item) => {
+    const base = (Number(item.quantity) * Number(item.purchaseRate)) - (Number(item.discount) || 0);
+    const withGst = base + (base * ((Number(item.gst) || 0) / 100));
+    return sum + (Math.round(withGst * 100) / 100);
+  }, 0);
 };
 
-export const createPurchase = async (input: PurchaseInput, key: string, client?: DbClient) => {
+export const createPurchase = async (
+  input: PurchaseInput,
+  key: string,
+  client?: DbClient,
+  shopId = 'default-shop-pharmora',
+) => {
+  const targetShopId = input.shopId || shopId;
   const stableKey = idempotencyKey(key);
-  if (!input.supplierId || !input.invoiceNumber?.trim() || !input.invoiceDate || Number.isNaN(input.invoiceDate.getTime())) {
-    throw invalid('Supplier, invoice number, and valid invoice date are required');
-  }
-  const totalAmount = calculatePurchaseTotal(input.items);
-  const method: PaymentMethod = input.paymentMethod ?? (input.paidAmount === 0 ? 'CREDIT' : 'CASH');
+  if (!input.items?.length) throw invalid('Purchase requires at least one line item');
+  if (input.invoiceDate && Number.isNaN(input.invoiceDate.getTime())) throw invalid('Invoice date is invalid');
 
-  let paidAmount = 0;
+  const method = input.paymentMethod ?? 'CREDIT';
+  let totalAmount = 0;
+  for (const item of input.items) {
+    positiveQuantity(item.quantity, 'Purchase item quantity');
+    nonNegativeQuantity(item.freeQty ?? 0, 'Purchase item free quantity');
+    nonNegativeAmount(item.purchaseRate, 'Purchase rate');
+    if (item.mrp !== undefined) nonNegativeAmount(item.mrp, 'MRP');
+    if (item.sellingPrice !== undefined) nonNegativeAmount(item.sellingPrice, 'Selling price');
+    if (item.gst !== undefined) nonNegativeAmount(item.gst, 'GST');
+    if (item.discount !== undefined) nonNegativeAmount(item.discount, 'Discount');
+    totalAmount += lineTotal(item.quantity, item.purchaseRate, item.discount ?? 0, item.gst ?? 0);
+  }
+  totalAmount = Math.round(totalAmount * 100) / 100;
+
+  const paidAmount = method === 'CREDIT' ? 0 : input.paidAmount ?? totalAmount;
+  nonNegativeAmount(paidAmount, 'Paid amount');
+  if (paidAmount > totalAmount) throw invalid('Paid amount cannot exceed total purchase amount');
+
   let cashAmount = 0;
   let upiAmount = 0;
-
-  if (method === 'CREDIT') {
-    paidAmount = 0;
-  } else if (method === 'BOTH') {
-    cashAmount = input.cashAmount ?? 0;
-    upiAmount = input.upiAmount ?? 0;
-    paidAmount = Math.round((cashAmount + upiAmount) * 100) / 100;
-    if (paidAmount <= 0) throw invalid('Split payment amounts must be positive');
-  } else {
-    paidAmount = input.paidAmount ?? totalAmount;
-    if (method === 'CASH') cashAmount = paidAmount;
-    else upiAmount = paidAmount;
-  }
-
-  if (paidAmount < 0 || paidAmount > totalAmount) {
-    throw invalid('Paid amount cannot be negative or exceed the total purchase amount');
+  if (method === 'BOTH') {
+    const accounts = paymentAccounts(method, paidAmount, input.cashAmount, input.upiAmount);
+    cashAmount = accounts.find((a) => a.method === 'CASH')?.amount ?? 0;
+    upiAmount = accounts.find((a) => a.method === 'UPI')?.amount ?? 0;
+  } else if (method === 'CASH') {
+    cashAmount = paidAmount;
+  } else if (method === 'UPI' || method === 'BANK') {
+    upiAmount = paidAmount;
   }
 
   const outstandingAmount = Math.round((totalAmount - paidAmount) * 100) / 100;
-  const status = paidAmount === totalAmount ? 'PAID' : paidAmount > 0 ? 'PARTIAL' : 'PENDING';
+  const status = outstandingAmount === 0 ? 'PAID' : paidAmount > 0 ? 'PARTIAL' : 'PENDING';
 
   const db = database(client);
   const prior = await db.purchase.findUnique({
     where: { idempotencyKey: stableKey },
-    include: { items: true, supplier: true },
+    include: { items: { include: { product: true, batch: true } }, supplier: true },
   });
-  if (prior) {
-    if (Number(prior.totalAmount) !== totalAmount || prior.supplierId !== input.supplierId) {
-      throw duplicate('Idempotency key reused with different financial payload');
-    }
-    return prior;
-  }
+  if (prior) return prior;
 
   try {
-    const createdPurchase = await withTransaction(client, async (tx) => {
-      const supplier = await tx.supplier.findUnique({ where: { id: input.supplierId } });
+    const result = await withTransaction(client, async (tx) => {
+      const supplier = tx.supplier.findFirst
+        ? await tx.supplier.findFirst({ where: { id: input.supplierId, shopId: targetShopId } })
+        : await tx.supplier.findUnique({ where: { id: input.supplierId } });
       if (!supplier) throw missing('Supplier');
 
       const purchase = await tx.purchase.create({
         data: {
+          shopId: targetShopId,
           supplierId: input.supplierId,
           invoiceNumber: input.invoiceNumber.trim(),
           invoiceDate: input.invoiceDate,
-          paymentMethod: method,
           totalAmount,
           paidAmount,
           outstandingAmount,
+          paymentMethod: method,
           status,
+          notes: input.notes?.trim(),
           createdById: input.createdById,
           idempotencyKey: stableKey,
         },
       });
 
       for (const [index, item] of input.items.entries()) {
-        if (!item.productId || !item.batchNumber?.trim()) throw invalid('Each purchase item requires a product and batch number');
-        if (item.expiryDate && Number.isNaN(item.expiryDate.getTime())) throw invalid('Batch expiry date is invalid');
-        const product = await tx.product.findUnique({ where: { id: item.productId }, select: { id: true } });
-        if (!product) throw missing('Product');
+        const product = tx.product.findFirst
+          ? await tx.product.findFirst({ where: { id: item.productId, shopId: targetShopId } })
+          : await tx.product.findUnique({ where: { id: item.productId } });
+        if (!product) throw missing(`Product ${item.productId}`);
 
-        const batchNumber = item.batchNumber.trim();
-        const batch = await tx.productBatch.findUnique({
-          where: { productId_batchNumber: { productId: item.productId, batchNumber } },
-        });
-        const quantityAdded = item.quantity + (item.freeQty ?? 0);
-
-        const storedBatch = batch
-          ? await tx.productBatch.update({
-              where: { id: batch.id },
-              data: {
-                freeQuantity: { increment: item.freeQty ?? 0 },
-                purchaseRate: item.purchaseRate,
-                mrp: item.mrp,
-                sellingPrice: item.sellingPrice,
-                gst: item.gst,
-                expiryDate: item.expiryDate,
-                supplierId: input.supplierId,
-              },
+        const totalQty = item.quantity + (item.freeQty ?? 0);
+        let batch = tx.productBatch.findFirst
+          ? await tx.productBatch.findFirst({
+              where: { productId: item.productId, batchNumber: item.batchNumber.trim(), shopId: targetShopId },
             })
-          : await tx.productBatch.create({
-              data: {
-                productId: item.productId,
-                batchNumber,
-                purchaseDate: input.invoiceDate,
-                expiryDate: item.expiryDate,
-                purchaseRate: item.purchaseRate,
-                mrp: item.mrp,
-                sellingPrice: item.sellingPrice,
-                gst: item.gst,
-                quantity: 0,
-                freeQuantity: item.freeQty ?? 0,
-                supplierId: input.supplierId,
-              },
-            });
+          : (tx.productBatch.findUnique
+              ? await tx.productBatch.findUnique({
+                  where: { productId_batchNumber: { productId: item.productId, batchNumber: item.batchNumber.trim() } } as any,
+                })
+              : null);
+
+        if (batch) {
+          batch = await tx.productBatch.update({
+            where: { id: batch.id },
+            data: {
+              purchaseRate: item.purchaseRate,
+              mrp: item.mrp ?? batch.mrp,
+              sellingPrice: item.sellingPrice ?? batch.sellingPrice,
+              gst: item.gst ?? batch.gst,
+              expiryDate: item.expiryDate ?? batch.expiryDate,
+              supplierId: input.supplierId,
+            },
+          });
+        } else {
+          batch = await tx.productBatch.create({
+            data: {
+              shopId: targetShopId,
+              productId: item.productId,
+              batchNumber: item.batchNumber.trim(),
+              quantity: 0,
+              freeQuantity: item.freeQty ?? 0,
+              purchaseRate: item.purchaseRate,
+              mrp: item.mrp,
+              sellingPrice: item.sellingPrice,
+              gst: item.gst,
+              purchaseDate: input.invoiceDate,
+              expiryDate: item.expiryDate,
+              supplierId: input.supplierId,
+              createdById: input.createdById,
+            },
+          });
+        }
 
         await tx.purchaseItem.create({
           data: {
+            shopId: targetShopId,
             purchaseId: purchase.id,
             productId: item.productId,
-            batchId: storedBatch.id,
+            batchId: batch.id,
+            batchNumber: item.batchNumber.trim(),
             quantity: item.quantity,
             freeQty: item.freeQty ?? 0,
             purchaseRate: item.purchaseRate,
             mrp: item.mrp,
+            sellingPrice: item.sellingPrice,
             gst: item.gst,
             discount: item.discount,
-            batchNumber,
             expiryDate: item.expiryDate,
           },
         });
 
         await applyStockMovement(tx, {
+          shopId: targetShopId,
           productId: item.productId,
-          batchId: storedBatch.id,
-          quantity: quantityAdded,
+          batchId: batch.id,
+          quantity: totalQty,
           movementType: 'PURCHASE_IN',
           referenceType: 'PURCHASE',
           referenceId: purchase.id,
           createdById: input.createdById,
-          idempotencyKey: `${stableKey}-item-${index}`,
+          idempotencyKey: `${stableKey.slice(0, 112)}:item-${index}`,
         });
       }
 
-      if (paidAmount > 0 && method !== 'CREDIT') {
-        const accounts = method === 'BOTH'
-          ? paymentAccounts(method, paidAmount, cashAmount, upiAmount)
-          : paymentAccounts(method, paidAmount);
-        for (const [accIndex, account] of accounts.entries()) {
-          const entryType = account.method === 'CASH' ? 'CASH_PURCHASE' as const : 'SUPPLIER_PAYMENT' as const;
+      if (paidAmount > 0) {
+        if (cashAmount > 0) {
           await writeCashbookEntry(tx, {
-            entryType,
+            shopId: targetShopId,
+            entryType: 'CASH_PURCHASE',
             direction: 'OUT',
-            amount: account.amount,
-            paymentMethod: account.method,
+            amount: cashAmount,
+            paymentMethod: 'CASH',
+            businessDate: input.invoiceDate,
             sourceType: 'PURCHASE',
             sourceId: purchase.id,
+            notes: `Cash purchase ${input.invoiceNumber}`,
             createdById: input.createdById,
-            notes: input.notes ?? `Purchase INV #${purchase.invoiceNumber}`,
-            idempotencyKey: `${stableKey}-pay-${accIndex}`,
+            idempotencyKey: `${stableKey.slice(0, 112)}:cash`,
+          });
+        }
+
+        if (upiAmount > 0) {
+          await writeCashbookEntry(tx, {
+            shopId: targetShopId,
+            entryType: 'MONEY_OUT',
+            direction: 'OUT',
+            amount: upiAmount,
+            paymentMethod: 'UPI',
+            businessDate: input.invoiceDate,
+            sourceType: 'PURCHASE',
+            sourceId: purchase.id,
+            notes: `UPI purchase ${input.invoiceNumber}`,
+            createdById: input.createdById,
+            idempotencyKey: `${stableKey.slice(0, 112)}:upi`,
           });
         }
       }
 
       if (outstandingAmount > 0) {
-        await tx.supplier.update({
-          where: { id: input.supplierId },
-          data: { outstanding: { increment: outstandingAmount } },
-        });
+        if (tx.supplier.updateMany) {
+          await tx.supplier.updateMany({
+            where: { id: input.supplierId, shopId: targetShopId },
+            data: { outstanding: { increment: outstandingAmount } },
+          });
+        } else {
+          await tx.supplier.update({
+            where: { id: input.supplierId },
+            data: { outstanding: { increment: outstandingAmount } },
+          });
+        }
       }
 
       await tx.auditLog.create({
         data: {
+          shopId: targetShopId,
           userId: input.createdById,
           action: 'PURCHASE_CREATED',
           entityType: 'Purchase',
           entityId: purchase.id,
           newValue: {
-            invoiceNumber: purchase.invoiceNumber,
-            totalAmount: purchase.totalAmount,
-            paidAmount: purchase.paidAmount,
-            outstandingAmount: purchase.outstandingAmount,
-            paymentMethod: purchase.paymentMethod,
+            invoiceNumber: input.invoiceNumber,
+            totalAmount,
+            paidAmount,
+            outstandingAmount,
+            paymentMethod: method,
+            supplierId: input.supplierId,
           },
         },
       });
 
-      return tx.purchase.findUnique({
-        where: { id: purchase.id },
-        include: { items: { include: { product: true, batch: true } }, supplier: true, supplierPayments: true },
-      });
+      return tx.purchase.findFirst
+        ? tx.purchase.findFirst({
+            where: { id: purchase.id, shopId: targetShopId },
+            include: { items: { include: { product: true, batch: true } }, supplier: true },
+          })
+        : tx.purchase.findUnique({
+            where: { id: purchase.id },
+            include: { items: { include: { product: true, batch: true } }, supplier: true },
+          });
     });
 
-    if (createdPurchase) {
+    if (result) {
       setImmediate(() => {
-        sendPurchaseSummary(createdPurchase.id, client, input.createdById).catch(() => {});
+        void sendPurchaseNotification(result.id, undefined, input.createdById, targetShopId).catch((err: any) => {
+          console.error('[Notification] Telegram purchase notification dispatch failed:', err);
+        });
       });
     }
 
-    return createdPurchase;
+    return result;
   } catch (error) {
     if (isUniqueConstraintError(error)) {
       const original = await db.purchase.findUnique({
         where: { idempotencyKey: stableKey },
-        include: { items: true, supplier: true },
+        include: { items: { include: { product: true, batch: true } }, supplier: true },
       });
       if (original) return original;
-      throw duplicate('Purchase invoice or idempotency key already exists');
+      throw duplicate('Purchase idempotency key already exists');
     }
     throw error;
   }
 };
 
-export const listPurchases = (supplierId?: string, client?: DbClient) =>
+export const listPurchases = (supplierId?: string, client?: DbClient, shopId = 'default-shop-pharmora') =>
   database(client).purchase.findMany({
-    where: supplierId ? { supplierId } : undefined,
-    include: { supplier: true, items: { include: { product: true, batch: true } }, supplierPayments: true },
+    where: { shopId, supplierId },
+    include: { supplier: true, items: { include: { product: true, batch: true } } },
     orderBy: { invoiceDate: 'desc' },
   });
 
-export const getPurchase = async (id: string, client?: DbClient) => {
-  const purchase = await database(client).purchase.findUnique({
-    where: { id },
-    include: { supplier: true, items: { include: { product: true, batch: true } }, supplierPayments: true },
+export const getPurchase = async (id: string, client?: DbClient, shopId = 'default-shop-pharmora') => {
+  const purchase = await database(client).purchase.findFirst({
+    where: { id, shopId },
+    include: { supplier: true, items: { include: { product: true, batch: true } } },
   });
   if (!purchase) throw missing('Purchase');
   return purchase;

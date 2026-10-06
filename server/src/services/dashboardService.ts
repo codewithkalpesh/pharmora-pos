@@ -5,7 +5,7 @@ import { getDailyCashSummary } from './cashbookService.js';
 import { getDailySalesReconciliation } from './dailySalesService.js';
 import { getProductStockSummary, getLowStockProducts, getExpiryInventory } from './inventoryService.js';
 
-export const getDashboardSummary = async (dateInput?: string | Date, client?: PrismaClient) => {
+export const getDashboardSummary = async (dateInput?: string | Date, client?: PrismaClient, shopId = 'default-shop-pharmora') => {
   const db = database(client);
   const normalizedDate = normalizeBusinessDate(dateInput ?? new Date());
   const dateStr = normalizedDate.toISOString().slice(0, 10);
@@ -14,21 +14,21 @@ export const getDashboardSummary = async (dateInput?: string | Date, client?: Pr
   const endOfDay = new Date(Date.UTC(normalizedDate.getUTCFullYear(), normalizedDate.getUTCMonth(), normalizedDate.getUTCDate(), 23, 59, 59, 999));
 
   const [reconciliation, cashSummary, purchases, expenses, customers, suppliers, lowStock, expiredItems, nearExpiryItems] = await Promise.all([
-    getDailySalesReconciliation(normalizedDate, client),
-    getDailyCashSummary(dateStr, db),
+    getDailySalesReconciliation(normalizedDate, client, shopId),
+    getDailyCashSummary(dateStr, db, shopId),
     db.purchase.findMany({
-      where: { invoiceDate: { gte: startOfDay, lte: endOfDay } },
+      where: { shopId, invoiceDate: { gte: startOfDay, lte: endOfDay } },
       select: { totalAmount: true, paidAmount: true, paymentMethod: true },
     }),
     db.expense.findMany({
-      where: { expenseDate: { gte: startOfDay, lte: endOfDay } },
+      where: { shopId, expenseDate: { gte: startOfDay, lte: endOfDay } },
       select: { amount: true, paymentMethod: true },
     }),
-    db.customer.aggregate({ _sum: { outstanding: true } }),
-    db.supplier.aggregate({ _sum: { outstanding: true } }),
-    getLowStockProducts({}, db).then((r) => r.pagination.total).catch(() => 0),
-    getExpiryInventory('EXPIRED', {}, db).then((r) => r.pagination.total).catch(() => 0),
-    getExpiryInventory('DAYS_0_30', {}, db).then((r) => r.pagination.total).catch(() => 0),
+    db.customer.aggregate({ where: { shopId }, _sum: { outstanding: true } }),
+    db.supplier.aggregate({ where: { shopId }, _sum: { outstanding: true } }),
+    getLowStockProducts({}, db, shopId).then((r) => r.pagination.total).catch(() => 0),
+    getExpiryInventory('EXPIRED', {}, db, shopId).then((r) => r.pagination.total).catch(() => 0),
+    getExpiryInventory('DAYS_0_30', {}, db, shopId).then((r) => r.pagination.total).catch(() => 0),
   ]);
 
   const totalPurchases = Math.round(purchases.reduce((acc, p) => acc + Number(p.totalAmount), 0) * 100) / 100;

@@ -13,15 +13,19 @@ export const protect = async (req: Request, _res: Response, next: NextFunction) 
     }
 
     const token = authHeader.split(' ')[1];
-    const payload = jwt.verify(token, env.jwtSecret) as { sub: string; role: string };
+    const payload = jwt.verify(token, env.jwtSecret) as { sub: string; role: string; shopId?: string };
 
     const user = await prisma.user.findUnique({
       where: { id: payload.sub },
-      include: { role: true },
+      include: { role: true, shop: true },
     });
 
     if (!user || !user.isActive) {
       return next(new AppError('Unauthorized', 401));
+    }
+
+    if (user.shop && !user.shop.isActive) {
+      return next(new AppError('Shop is deactivated. Please contact support.', 403));
     }
 
     req.user = {
@@ -29,6 +33,8 @@ export const protect = async (req: Request, _res: Response, next: NextFunction) 
       name: user.name,
       email: user.email,
       role: user.role.name,
+      shopId: user.shopId,
+      shopName: user.shop?.name,
     };
 
     return next();
