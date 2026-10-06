@@ -1,0 +1,351 @@
+.inventory-header {
+  align-items: flex-end;
+}
+
+.inventory-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.inventory-toolbar {
+  display: grid;
+  grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(130px, 1fr)) auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.inventory-toolbar label,
+.inventory-form label,
+.product-form-grid label,
+.category-inline-form label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.81rem;
+  font-weight: 650;
+}
+
+.inventory-toolbar input,
+.inventory-toolbar select,
+.inventory-form input,
+.inventory-form select,
+.product-form-grid input,
+.product-form-grid select,
+.category-inline-form input {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--text);
+  font: inherit;
+  font-weight: 400;
+}
+
+.inventory-toolbar input:focus,
+.inventory-toolbar select:focus,
+.inventory-form input:focus,
+.inventory-form select:focus,
+.product-form-grid input:focus,
+.product-form-grid select:focus,
+.category-inline-form input:focus {
+  outline: 2px solid rgba(28, 124, 109, 0.2);
+  border-color: var(--primary);
+}
+
+.inventory-search {
+  min-width: 230px;
+}
+
+.inventory-table-panel,
+.product-editor,
+.inventory-detail-grid > .panel,
+.inventory-detail-side > .panel {
+  border-radius: 8px;
+  box-shadow: 0 5px 16px rgba(16, 35, 59, 0.035);
+}
+
+.inventory-table-panel {
+  min-width: 0;
+}
+
+.inventory-table-panel .table-scroll {
+  overflow-x: auto;
+}
+
+.inventory-table-panel table {
+  min-width: 800px;
+}
+
+.inventory-table-panel th {
+  white-space: nowrap;
+  font-size: 0.72rem;
+}
+
+.inventory-table-panel td {
+  font-size: 0.86rem;
+  vertical-align: middle;
+}
+
+.inventory-table-panel td small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.product-name-link {
+  color: var(--text);
+  font-weight: 700;
+}
+
+.product-name-link:hover {
+  color: var(--primary);
+}
+
+.inventory-row-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.text-action {
+  border: 0;
+  padding: 5px 6px;
+  background: none;
+  color: var(--primary);
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.text-action:hover {
+  text-decoration: underline;
+}
+
+.inventory-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.inventory-pagination > div {
+  display: flex;
+  gap: 7px;
+}
+
+.inventory-pagination .secondary-btn {
+  min-height: 34px;
+  padding: 5px 10px;
+}
+
+.category-inline-form {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  max-width: 550px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+}
+
+.category-inline-form label {
+  flex: 1;
+}
+
+.product-editor {
+  padding: 18px;
+}
+
+.product-form-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(130px, 1fr));
+  gap: 12px;
+}
+
+.product-form-grid .product-form-actions {
+  display: flex;
+  align-items: end;
+}
+
+.product-form-actions button {
+  width: 100%;
+}
+
+.inventory-error {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid #f0c7c4;
+  border-radius: 7px;
+  background: #fff2f1;
+  color: #a73330;
+}
+
+.inventory-auth {
+  width: min(100%, 430px);
+  border-radius: 8px;
+}
+
+.inventory-auth h2,
+.inventory-detail-grid h2 {
+  margin-top: 0;
+  font-size: 1.08rem;
+}
+
+.inventory-form {
+  display: grid;
+  gap: 11px;
+}
+
+.inventory-form .primary-btn,
+.inventory-form .secondary-btn {
+  width: 100%;
+}
+
+.inventory-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.inventory-summary-grid .metric-card {
+  min-height: 82px;
+  border-radius: 8px;
+}
+
+.inventory-summary-grid .metric-card strong {
+  font-size: 1.16rem;
+}
+
+.product-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.product-facts > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.product-facts span {
+  color: var(--muted);
+  font-size: 0.77rem;
+}
+
+.product-facts strong {
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.inventory-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(280px, 0.8fr);
+  align-items: start;
+  gap: 14px;
+}
+
+.inventory-detail-side {
+  display: grid;
+  gap: 14px;
+}
+
+.inventory-detail-grid table {
+  min-width: 650px;
+}
+
+.fefo-list {
+  display: grid;
+  gap: 0;
+}
+
+.fefo-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.fefo-row span,
+.fefo-row small {
+  display: block;
+}
+
+.fefo-row small {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 0.77rem;
+}
+
+.fefo-row strong {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.inventory-detail-side > .panel {
+  padding: 17px;
+}
+
+@media (max-width: 1050px) {
+  .inventory-toolbar {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inventory-search {
+    grid-column: 1 / -1;
+  }
+
+  .product-form-grid {
+    grid-template-columns: repeat(3, minmax(120px, 1fr));
+  }
+}
+
+@media (max-width: 780px) {
+  .inventory-detail-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 560px) {
+  .inventory-toolbar,
+  .product-form-grid,
+  .inventory-summary-grid,
+  .product-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .inventory-search {
+    min-width: 0;
+  }
+
+  .inventory-pagination {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .category-inline-form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}

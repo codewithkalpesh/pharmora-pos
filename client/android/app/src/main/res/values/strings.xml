@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Pharmora POS</string>
+    <string name="title_activity_main">Pharmora POS</string>
+    <string name="package_name">com.codewithkalpesh.pharmorapos</string>
+    <string name="custom_url_scheme">com.codewithkalpesh.pharmorapos</string>
+</resources>

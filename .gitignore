@@ -1,0 +1,34 @@
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+*.local
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build Outputs & Android Artifacts
+dist/
+build/
+dist-ssr/
+coverage/
+*.apk
+*.aab
+.gradle/
+local.properties
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# IDE & OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
