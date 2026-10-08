@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo } from 'react'
 import './inventory.css'
+import { API_BASE as apiBase } from './config.js'
 
 type SessionProps = {
   token: string
@@ -75,8 +76,6 @@ type PurchaseOrder = {
     }
   }>
 }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}/api${path}`, {

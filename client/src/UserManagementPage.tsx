@@ -1,8 +1,7 @@
 import { useEffect, useState, type FormEvent } from 'react';
 import { useAuth, type User, type UserRole } from './AuthContext.js';
+import { API_BASE as apiBase } from './config.js';
 import './auth.css';
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 const ROLES: UserRole[] = ['OWNER', 'MANAGER', 'CASHIER', 'PHARMACIST', 'STAFF'];
 

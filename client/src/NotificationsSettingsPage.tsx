@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import './pos.css';
+import { API_BASE as apiBase } from './config.js';
 
 type TelegramConfig = {
   configured: boolean;
@@ -27,8 +28,6 @@ type TelegramEvent = {
   sentAt?: string | null;
   createdAt: string;
 };
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 export function NotificationsSettingsPage({ token }: { token: string }) {
   const [config, setConfig] = useState<TelegramConfig | null>(null);

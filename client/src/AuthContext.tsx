@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
+import { API_BASE as apiBase } from './config.js';
 
 export type UserRole = 'OWNER' | 'MANAGER' | 'CASHIER' | 'PHARMACIST' | 'STAFF';
 
@@ -55,7 +56,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const TOKEN_KEY = 'pharmora-pos-token';
 const USER_KEY = 'pharmora-pos-user';
-const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://pharmora-pos-api.onrender.com' : 'http://localhost:4000');
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? '');

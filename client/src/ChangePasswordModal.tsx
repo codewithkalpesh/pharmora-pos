@@ -1,12 +1,11 @@
 import { useState, type FormEvent } from 'react';
 import { useAuth } from './AuthContext.js';
+import { API_BASE as apiBase } from './config.js';
 
 interface ChangePasswordModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 export function ChangePasswordModal({ isOpen, onClose }: ChangePasswordModalProps) {
   const { token } = useAuth();

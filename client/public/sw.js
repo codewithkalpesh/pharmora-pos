@@ -42,7 +42,9 @@ self.addEventListener('fetch', (event) => {
         if (url.pathname.startsWith('/api')) {
           return new Response(
             JSON.stringify({
-              error: 'Offline: Financial operations require an active server connection.',
+              success: false,
+              message: 'Offline: Financial and account operations require an active internet connection.',
+              error: 'Offline: Financial and account operations require an active internet connection.',
               offline: true,
             }),
             {

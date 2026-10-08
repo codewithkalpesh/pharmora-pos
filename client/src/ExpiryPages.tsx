@@ -1,12 +1,11 @@
 import React, { useState, useEffect } from 'react';
+import { API_BASE as apiBase } from './config.js';
 
 type Props = {
   token: string;
   onSignIn?: (token: string) => void;
   onSignOut?: () => void;
 };
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
 
 function formatMoney(value: number | string | null | undefined) {
   if (value === null || value === undefined) return '—';

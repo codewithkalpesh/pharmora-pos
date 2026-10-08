@@ -1,5 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import './pos.css'
+import { API_BASE as apiBase } from './config.js'
 
 type ReconciliationData = {
   businessDate: string
@@ -20,8 +21,6 @@ type ReconciliationData = {
   isClosed: boolean
   dailySaleId?: string
 }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 function formatINR(amount: number | string | null | undefined) {
   if (amount === null || amount === undefined || isNaN(Number(amount))) return '₹0.00'

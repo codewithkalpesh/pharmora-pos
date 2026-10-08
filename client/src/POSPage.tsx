@@ -3,6 +3,7 @@ import './pos.css'
 import { ReceiptModal } from './ReceiptModal.js'
 import { BarcodeScannerModal } from './BarcodeScannerModal.js'
 import { createUUID } from './utils/uuid'
+import { API_BASE as apiBase } from './config.js'
 
 type Product = {
   id: string
@@ -61,8 +62,6 @@ type CompletedSale = {
     batch?: { batchNumber: string; expiryDate?: string | null } | null
   }>
 }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 function formatINR(amount: number | string | null | undefined) {
   if (amount === null || amount === undefined || isNaN(Number(amount))) return '₹0.00'

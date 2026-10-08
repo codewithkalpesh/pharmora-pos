@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react'
 import './cashbook.css'
 import './inventory.css'
 import './pos.css'
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
+import { API_BASE as apiBase } from './config.js'
 
 function formatMoney(value: string | number | null | undefined) {
   if (value === null || value === undefined) return '—'

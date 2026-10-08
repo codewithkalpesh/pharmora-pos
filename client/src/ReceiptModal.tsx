@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
 import './pos.css'
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
+import { API_BASE as apiBase } from './config.js'
 
 export type ReceiptData = {
   store: {

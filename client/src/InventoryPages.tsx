@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import './inventory.css'
 import { createUUID } from './utils/uuid'
+import { API_BASE as apiBase } from './config.js'
 
 type SessionProps = {
   token: string
@@ -86,8 +87,6 @@ type StockSummary = Product & {
 }
 
 type FefoResult = { allocations: Array<{ quantity: number; batch: Batch }>; totalAvailable: number }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 async function request<T>(path: string, token: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(`${apiBase}/api${path}`, {

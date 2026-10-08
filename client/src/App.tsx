@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { BrowserRouter, Link, NavLink, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import './cashbook.css'
 import './auth.css'
+import { API_BASE as apiBase } from './config.js'
 import { AuthProvider, useAuth } from './AuthContext.js'
 import { LoginPage } from './LoginPage.js'
 import { SignupPage } from './SignupPage.js'
@@ -94,8 +95,6 @@ type DailyClosingRecord = {
   notes: string | null
   closedBy?: { name: string } | null
 }
-
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000'
 
 function localDate() {
   const date = new Date()
