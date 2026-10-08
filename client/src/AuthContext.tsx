@@ -55,7 +55,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const TOKEN_KEY = 'pharmora-pos-token';
 const USER_KEY = 'pharmora-pos-user';
-const apiBase = import.meta.env.VITE_API_URL ?? 'http://localhost:4000';
+const apiBase = import.meta.env.VITE_API_URL || (import.meta.env.PROD ? 'https://pharmora-pos-api.onrender.com' : 'http://localhost:4000');
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setToken] = useState<string>(() => localStorage.getItem(TOKEN_KEY) ?? '');
@@ -166,10 +166,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       body: JSON.stringify(signupData),
     });
 
-    const payload = await res.json();
+    const payload = await res.json().catch(() => null);
 
-    if (!res.ok || !payload.success) {
-      throw new Error(payload.message || 'Signup failed. Please check your details.');
+    if (!res.ok || !payload?.success) {
+      throw new Error(payload?.message || (res.status === 400 ? 'Signup failed. Please check your details.' : `Signup failed (${res.status || 'network error'}). Please try again.`));
     }
 
     const receivedToken = payload.token;

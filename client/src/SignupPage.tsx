@@ -138,7 +138,14 @@ export function SignupPage() {
         {error && (
           <div className="login-error-alert" role="alert">
             <span>⚠️</span>
-            <span>{error}</span>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <span>{error}</span>
+              {error.toLowerCase().includes('already exists') && (
+                <Link to="/login" style={{ color: '#0284c7', fontWeight: 600, fontSize: '0.85rem', textDecoration: 'underline' }}>
+                  Click here to Log In instead →
+                </Link>
+              )}
+            </div>
           </div>
         )}
 
