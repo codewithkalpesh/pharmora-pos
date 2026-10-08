@@ -34,23 +34,13 @@ const app = express();
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Allow requests with no origin (e.g. mobile apps, server-to-server, curl) or any web origin
       if (!origin) return callback(null, true);
-      const isAllowed = env.allowedOrigins.some((allowed) => {
-        if (allowed === origin) return true;
-        try {
-          const originUrl = new URL(origin);
-          const allowedUrl = new URL(allowed);
-          return originUrl.origin === allowedUrl.origin;
-        } catch {
-          return false;
-        }
-      });
-      if (isAllowed || env.nodeEnv === 'development') {
-        return callback(null, true);
-      }
-      return callback(new Error(`Origin ${origin} not allowed by CORS`));
+      return callback(null, true);
     },
     credentials: true,
+    methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
   }),
 );
 app.use(express.json());
