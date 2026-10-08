@@ -155,8 +155,8 @@ const supplierSchema = z.object({
   address: z.string().optional(), paymentTerms: z.string().optional(), creditLimit: nonNegative.optional(),
 });
 export const listSuppliers = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.listSuppliers(typeof req.query.search === 'string' ? req.query.search : undefined, undefined, shopId(req)) }));
-export const createSupplier = endpoint(async (req, res) => res.status(201).json({ success: true, data: await suppliers.createSupplier(parse(supplierSchema, req.body), undefined, shopId(req)) }));
-export const updateSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.updateSupplier(String(req.params.id), parse(supplierSchema.partial(), req.body), undefined, shopId(req)) }));
+export const createSupplier = endpoint(async (req, res) => res.status(201).json({ success: true, data: await suppliers.createSupplier(parse(supplierSchema, req.body), undefined, actorId(req), shopId(req)) }));
+export const updateSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.updateSupplier(String(req.params.id), parse(supplierSchema.partial(), req.body), undefined, actorId(req), shopId(req)) }));
 export const getSupplier = endpoint(async (req, res) => res.json({ success: true, data: await suppliers.getSupplier(String(req.params.id), undefined, shopId(req)) }));
 
 const purchaseSchema = z.object({

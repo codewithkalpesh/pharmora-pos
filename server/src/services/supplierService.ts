@@ -39,7 +39,7 @@ const auditSupplier = async (
     await (db as any).auditLog.create({
       data: {
         shopId: supplier.shopId,
-        userId: actorId,
+        userId: actorId || null,
         action,
         entityType: 'Supplier',
         entityId: supplier.id,
